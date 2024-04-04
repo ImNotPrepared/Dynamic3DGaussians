@@ -4,235 +4,130 @@ import numpy as np
 import open3d as o3d
 import time
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
-from helpers import setup_camera, quat_mult
-from external import build_rotation
 from colormap import colormap
-from copy import deepcopy
+import matplotlib.pyplot as plt
+from pytorch3d.renderer import (
 
-RENDER_MODE = 'color'  # 'color', 'depth' or 'centers'
-# RENDER_MODE = 'depth'  # 'color', 'depth' or 'centers'
-# RENDER_MODE = 'centers'  # 'color', 'depth' or 'centers'
+    PointsRasterizationSettings,
+    PointsRenderer,
+    PointsRasterizer,
+    AlphaCompositor,
+    PerspectiveCameras
+)
+import os
+import imageio
+import torch
+from pytorch3d.renderer.cameras import FoVPerspectiveCameras
+import cv2
 
-ADDITIONAL_LINES = None  # None, 'trajectories' or 'rotations'
-# ADDITIONAL_LINES = 'trajectories'  # None, 'trajectories' or 'rotations'
-# ADDITIONAL_LINES = 'rotations'  # None, 'trajectories' or 'rotations'
+from PIL import Image
+from vis_utils import *
+w, h = 512, 288
+near, far = 0.01, 10.0
+view_scale = 1
 
-REMOVE_BACKGROUND = False  # False or True
-# REMOVE_BACKGROUND = True  # False or True
-
-FORCE_LOOP = False  # False or True
-# FORCE_LOOP = True  # False or True
-
-w, h = 640, 360
-near, far = 0.01, 100.0
-view_scale = 3.9
 fps = 20
-traj_frac = 25  # 4% of points
+traj_frac = 90  # 4% of points
 traj_length = 15
+
 def_pix = torch.tensor(
     np.stack(np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5, 1), -1).reshape(-1, 3)).cuda().float()
 pix_ones = torch.ones(h * w, 1).cuda().float()
-
-
-def init_camera(y_angle=0., center_dist=2.4, cam_height=1.3, f_ratio=0.82):
-    ry = y_angle * np.pi / 180
-    w2c = np.array([[np.cos(ry), 0., -np.sin(ry), 0.],
-                    [0.,         1., 0.,          cam_height],
-                    [np.sin(ry), 0., np.cos(ry),  center_dist],
-                    [0.,         0., 0.,          1.]])
-    k = np.array([[f_ratio * w, 0, w / 2], [0, f_ratio * w, h / 2], [0, 0, 1]])
-    return w2c, k
-
-
-def load_scene_data(seq, exp, seg_as_col=False):
-    params = dict(np.load(f"./output/{exp}/{seq}/params.npz"))
-    params = {k: torch.tensor(v).cuda().float() for k, v in params.items()}
-    is_fg = params['seg_colors'][:, 0] > 0.5
-    scene_data = []
-    for t in range(len(params['means3D'])):
-        rendervar = {
-            'means3D': params['means3D'][t],
-            'colors_precomp': params['rgb_colors'][t] if not seg_as_col else params['seg_colors'],
-            'rotations': torch.nn.functional.normalize(params['unnorm_rotations'][t]),
-            'opacities': torch.sigmoid(params['logit_opacities']),
-            'scales': torch.exp(params['log_scales']),
-            'means2D': torch.zeros_like(params['means3D'][0], device="cuda")
-        }
-        if REMOVE_BACKGROUND:
-            rendervar = {k: v[is_fg] for k, v in rendervar.items()}
-        scene_data.append(rendervar)
-    if REMOVE_BACKGROUND:
-        is_fg = is_fg[is_fg]
-    return scene_data, is_fg
-
-
-def make_lineset(all_pts, cols, num_lines):
-    linesets = []
-    for pts in all_pts:
-        lineset = o3d.geometry.LineSet()
-        lineset.points = o3d.utility.Vector3dVector(np.ascontiguousarray(pts, np.float64))
-        lineset.colors = o3d.utility.Vector3dVector(np.ascontiguousarray(cols, np.float64))
-        pt_indices = np.arange(len(lineset.points))
-        line_indices = np.stack((pt_indices, pt_indices - num_lines), -1)[num_lines:]
-        lineset.lines = o3d.utility.Vector2iVector(np.ascontiguousarray(line_indices, np.int32))
-        linesets.append(lineset)
-    return linesets
-
-
-def calculate_trajectories(scene_data, is_fg):
-    in_pts = [data['means3D'][is_fg][::traj_frac].contiguous().float().cpu().numpy() for data in scene_data]
-    num_lines = len(in_pts[0])
-    cols = np.repeat(colormap[np.arange(len(in_pts[0])) % len(colormap)][None], traj_length, 0).reshape(-1, 3)
-    out_pts = []
-    for t in range(len(in_pts))[traj_length:]:
-        out_pts.append(np.array(in_pts[t - traj_length:t + 1]).reshape(-1, 3))
-    return make_lineset(out_pts, cols, num_lines)
-
-
-def calculate_rot_vec(scene_data, is_fg):
-    in_pts = [data['means3D'][is_fg][::traj_frac].contiguous().float().cpu().numpy() for data in scene_data]
-    in_rotation = [data['rotations'][is_fg][::traj_frac] for data in scene_data]
-    num_lines = len(in_pts[0])
-    cols = colormap[np.arange(num_lines) % len(colormap)]
-    inv_init_q = deepcopy(in_rotation[0])
-    inv_init_q[:, 1:] = -1 * inv_init_q[:, 1:]
-    inv_init_q = inv_init_q / (inv_init_q ** 2).sum(-1)[:, None]
-    init_vec = np.array([-0.1, 0, 0])
-    out_pts = []
-    for t in range(len(in_pts)):
-        cam_rel_qs = quat_mult(in_rotation[t], inv_init_q)
-        rot = build_rotation(cam_rel_qs).cpu().numpy()
-        vec = (rot @ init_vec[None, :, None]).squeeze()
-        out_pts.append(np.concatenate((in_pts[t] + vec, in_pts[t]), 0))
-    return make_lineset(out_pts, cols, num_lines)
-
-
-def render(w2c, k, timestep_data):
-    with torch.no_grad():
-        cam = setup_camera(w, h, k, w2c, near, far)
-        im, _, depth, = Renderer(raster_settings=cam)(**timestep_data)
-        return im, depth
-
-
-def rgbd2pcd(im, depth, w2c, k, show_depth=False, project_to_cam_w_scale=None):
-    d_near = 1.5
-    d_far = 6
-    invk = torch.inverse(torch.tensor(k).cuda().float())
-    c2w = torch.inverse(torch.tensor(w2c).cuda().float())
-    radial_depth = depth[0].reshape(-1)
-    def_rays = (invk @ def_pix.T).T
-    def_radial_rays = def_rays / torch.linalg.norm(def_rays, ord=2, dim=-1)[:, None]
-    pts_cam = def_radial_rays * radial_depth[:, None]
-    z_depth = pts_cam[:, 2]
-    if project_to_cam_w_scale is not None:
-        pts_cam = project_to_cam_w_scale * pts_cam / z_depth[:, None]
-    pts4 = torch.concat((pts_cam, pix_ones), 1)
-    pts = (c2w @ pts4.T).T[:, :3]
-    if show_depth:
-        cols = ((z_depth - d_near) / (d_far - d_near))[:, None].repeat(1, 3)
-    else:
-        cols = torch.permute(im, (1, 2, 0)).reshape(-1, 3)
-    pts = o3d.utility.Vector3dVector(pts.contiguous().double().cpu().numpy())
-    cols = o3d.utility.Vector3dVector(cols.contiguous().double().cpu().numpy())
-    return pts, cols
+image_size, radius = (h, w), 0.01
+RENDER_MODE='color'
 
 
 def visualize(seq, exp):
+    start_time = time.time()
     scene_data, is_fg = load_scene_data(seq, exp)
+    ## N_frames * dict_keys(['means3D', 'colors_precomp', 'rotations', 'opacities', 'scales', 'means2D'])
+    #print(scene_data, len(scene_data), scene_data[0].keys())
+    w2c, k = init_camera(w,h)
+    num_timesteps = len(scene_data)
+    im, depth = render(w2c, k, scene_data[0], w, h, near, far)
+    first_=np.array(im.detach().cpu().permute(1, 2, 0).numpy())
+    cv2.imwrite('./1st.png', first_)
+    pointclouds = rgbd2pcd(im, depth, w2c, k, def_pix, pix_ones, show_depth=(RENDER_MODE == 'depth'))
+    ### 360 rotation
+    frames=[]
+    while len(frames)<10:
+        passed_time = time.time() - start_time
+        passed_frames = passed_time * fps
+        t = int(passed_frames % num_timesteps)
+        num_loops = 1.4
+        y_angle = 360*t*num_loops / num_timesteps
+        frame=render_pointcloud_pytorch3d(w, h, image_size, radius, pointclouds, y_angle)
+        array = np.clip(frame, 0, 1)  # Assuming the array values are scaled between 0 and 1
+        array = (array * 255).astype(np.uint8)  # Scale to 0-255 and convert to uint8
+        frame = Image.fromarray(array)
+        frames.append(frame)
+    gif_path = os.path.join('./vis', f"{seq}.gif")
+    imageio.mimwrite(gif_path, frames, duration=1000.0*(1/10.0), loop=0)
 
-    vis = o3d.visualization.Visualizer()
-    vis.create_window(width=int(w * view_scale), height=int(h * view_scale), visible=True)
+if __name__ == "__main__":
+    exp_name = "exp3"
+    for sequence in ["cmu_bike"]:
+        visualize(sequence, exp_name)
 
-    w2c, k = init_camera()
-    im, depth = render(w2c, k, scene_data[0])
-    init_pts, init_cols = rgbd2pcd(im, depth, w2c, k, show_depth=(RENDER_MODE == 'depth'))
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = init_pts
-    pcd.colors = init_cols
-    vis.add_geometry(pcd)
 
-    linesets = None
-    lines = None
-    if ADDITIONAL_LINES is not None:
-        if ADDITIONAL_LINES == 'trajectories':
-            linesets = calculate_trajectories(scene_data, is_fg)
-        elif ADDITIONAL_LINES == 'rotations':
-            linesets = calculate_rot_vec(scene_data, is_fg)
-        lines = o3d.geometry.LineSet()
-        lines.points = linesets[0].points
-        lines.colors = linesets[0].colors
-        lines.lines = linesets[0].lines
-        vis.add_geometry(lines)
+'''
 
-    view_k = k * view_scale
-    view_k[2, 2] = 1
-    view_control = vis.get_view_control()
-    cparams = o3d.camera.PinholeCameraParameters()
-    cparams.extrinsic = w2c
-    cparams.intrinsic.intrinsic_matrix = view_k
-    cparams.intrinsic.height = int(h * view_scale)
-    cparams.intrinsic.width = int(w * view_scale)
-    view_control.convert_from_pinhole_camera_parameters(cparams, allow_arbitrary=True)
+    frames = []
+    angles = [0.0, 3.3599999999999994, 6.719999999999999, 10.08, 13.439999999999998, 16.8, 20.16, 23.52, 26.879999999999995, 30.24, 33.6, 36.96, 40.32, 43.68, 47.04, 50.39999999999999, 53.75999999999999, 57.12, 60.48, 63.84, 67.2, 70.56, 73.92, 77.28, 80.64, 84.0, 87.36, 90.72, 94.08, 97.43999999999998, 100.79999999999998, 104.15999999999998, 107.51999999999998, 110.88, 114.24, 117.6, 120.96, 124.32, 127.68, 131.04, 134.4, 137.76, 141.12, 144.48, 147.84, 151.2, 154.56, 157.92, 161.28, 164.64, 168.0, 171.36, 174.72, 178.08, 181.44, 184.8, 188.16, 191.51999999999998, 194.87999999999997, 198.23999999999998, 201.59999999999997, 204.95999999999998, 208.31999999999996, 211.67999999999998, 215.03999999999996, 218.39999999999998, 221.76, 225.12, 228.48, 231.84, 235.2, 238.56, 241.92, 245.28, 248.64, 252.0, 255.36, 258.72, 262.08, 265.44, 268.8, 272.16, 275.52, 278.88, 282.24, 285.6, 288.96, 292.32, 299.04, 302.4, 305.76, 309.12, 312.48, 315.84, 319.2, 322.56, 325.92, 329.28, 332.64, 336.0, 339.36, 342.72, 346.08, 349.44, 352.8, 356.16, 359.52, 362.88, 366.24, 369.6, 372.96, 376.32, 379.68, 383.03999999999996, 386.4, 389.75999999999993, 393.11999999999995, 396.47999999999996, 399.84, 403.19999999999993, 406.55999999999995, 413.28, 416.63999999999993, 419.99999999999994, 423.35999999999996, 426.71999999999997, 430.0799999999999, 433.43999999999994, 436.79999999999995, 440.16, 443.52, 446.88, 450.24, 453.6, 456.96, 460.32, 463.68, 467.04, 470.4, 473.76, 477.12, 480.48, 483.84, 487.2, 490.56, 493.92, 497.28, 500.64]
+    for t, y_angle in tqdm(enumerate(angles[:10])):
+      w2c, k = init_camera(y_angle)
+      im, depth = render(w2c, k, scene_data[t])
+      pointclouds = rgbd2pcd(im, depth, w2c, k, show_depth=(RENDER_MODE == 'depth'))
+      frame = render_pointcloud_pytorch3d(pointclouds, y_angle)
+      array = np.clip(frame, 0, 1)  # Assuming the array values are scaled between 0 and 1
+      array = (array * 255).astype(np.uint8)  # Scale to 0-255 and convert to uint8
 
-    render_options = vis.get_render_option()
-    render_options.point_size = view_scale
-    render_options.light_on = False
+      # Now, convert the processed array to a PIL Image
+      frame = Image.fromarray(array)
+      frames.append(frame)
+    gif_path = os.path.join('./vis', "tennis.gif")
+    imageio.mimwrite(gif_path, frames, duration=1000.0*(1/10.0), loop=0)
+    ####
+
+    
+
+    num_views = 32
+    azims = np.linspace(-180, 180, num_views)
+
+    for i in tqdm(range(num_views), desc="Rendering"):
+
+        dist = 6.0
+        R, T = look_at_view_transform(dist = dist, azim=azims[i], elev=30.0, up=((0, -1, 0),))
+        camera = PerspectiveCameras(
+            focal_length=5.0 * dim/2.0, in_ndc=False,
+            principal_point=((dim/2, dim/2),),
+            R=R, T=T, image_size=(img_size,),
+        ).to(args.device)
+
+        img = img.detach().cpu().numpy()
+        depth = depth.detach().cpu().numpy()
+
+        img = (np.clip(img, 0.0, 1.0) * 255.0).astype(np.uint8)
+
+        depth = depth[:, :, 0].astype(np.float32)  # (H, W)
+        coloured_depth = colour_depth_q1_render(depth)  # (H, W, 3)
+
+        concat = np.concatenate([img, coloured_depth, mask], axis = 1)
+        resized = Image.fromarray(concat).resize((256*3, 256))
+        resized.save(debug_path)
+
+        imgs.append(np.array(resized))
+        imageio.mimwrite(gif_path, imgs, duration=1000.0*(1/10.0), loop=0)
 
     start_time = time.time()
     num_timesteps = len(scene_data)
-    while True:
-        passed_time = time.time() - start_time
-        passed_frames = passed_time * fps
-        if ADDITIONAL_LINES == 'trajectories':
-            t = int(passed_frames % (num_timesteps - traj_length)) + traj_length  # Skip t that don't have full traj.
-        else:
-            t = int(passed_frames % num_timesteps)
-
-        if FORCE_LOOP:
-            num_loops = 1.4
-            y_angle = 360*t*num_loops / num_timesteps
-            w2c, k = init_camera(y_angle)
-            cam_params = view_control.convert_to_pinhole_camera_parameters()
-            cam_params.extrinsic = w2c
-            view_control.convert_from_pinhole_camera_parameters(cam_params, allow_arbitrary=True)
-        else:  # Interactive control
-            cam_params = view_control.convert_to_pinhole_camera_parameters()
-            view_k = cam_params.intrinsic.intrinsic_matrix
-            k = view_k / view_scale
-            k[2, 2] = 1
-            w2c = cam_params.extrinsic
-
-        if RENDER_MODE == 'centers':
-            pts = o3d.utility.Vector3dVector(scene_data[t]['means3D'].contiguous().double().cpu().numpy())
-            cols = o3d.utility.Vector3dVector(scene_data[t]['colors_precomp'].contiguous().double().cpu().numpy())
-        else:
-            im, depth = render(w2c, k, scene_data[t])
-            pts, cols = rgbd2pcd(im, depth, w2c, k, show_depth=(RENDER_MODE == 'depth'))
-        pcd.points = pts
-        pcd.colors = cols
-        vis.update_geometry(pcd)
-
-        if ADDITIONAL_LINES is not None:
-            if ADDITIONAL_LINES == 'trajectories':
-                lt = t - traj_length
-            else:
-                lt = t
-            lines.points = linesets[lt].points
-            lines.colors = linesets[lt].colors
-            lines.lines = linesets[lt].lines
-            vis.update_geometry(lines)
-
-        if not vis.poll_events():
-            break
-        vis.update_renderer()
-
-    vis.destroy_window()
-    del view_control
-    del vis
-    del render_options
+    passed_time = time.time() - start_time
+    passed_frames = passed_time * fps
+    if ADDITIONAL_LINES == 'trajectories':
+        t = int(passed_frames % (num_timesteps - traj_length)) + traj_length  # Skip t that don't have full traj.
+    else:
+        t = int(passed_frames % num_timesteps)
 
 
-if __name__ == "__main__":
-    exp_name = "pretrained"
-    for sequence in ["basketball", "boxes", "football", "juggle", "softball", "tennis"]:
-        visualize(sequence, exp_name)
+
+'''
