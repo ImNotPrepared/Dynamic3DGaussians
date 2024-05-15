@@ -192,6 +192,45 @@ def visualize(seq, exp):
 
 
 if __name__ == "__main__":
-    exp_name = "exp1"
+    exp_name = "exp4"
     for sequence in ["tennis"]:
         visualize(sequence, exp_name)
+
+
+
+
+
+
+
+
+
+
+        def visualize(seq, exp):
+    start_time = time.time()
+    scene_data, is_fg = load_scene_data(seq, exp)
+    ## N_frames * dict_keys(['means3D', 'colors_precomp', 'rotations', 'opacities', 'scales', 'means2D'])
+    #print(scene_data, len(scene_data), scene_data[0].keys())
+    w2c, k = init_camera(w,h)
+    #w2c, k = np.array([[-0.8231692314147949, -0.06347180902957916, 0.5642383694648743, -1.4259400367736816], [-0.5675535202026367, 0.06287052482366562, -0.8209329843521118, 1.021886944770813], [0.016631940379738808, -0.996001660823822, -0.08777729421854019, -0.08891899883747101], [0.0, 0.0, 0.0, 1.0]]), np.array([[118.28446960449219, 0.0, 128.0], [0.0, 118.28446960449219, 72.0], [0.0, 0.0, 1.0]]) 
+    num_timesteps = len(scene_data)
+    im, depth = render(w2c, k, scene_data[0], w, h, near, far)
+    cv2.imwrite(os.path.join('./vis', f"lalala{seq}.png"), np.array(im.cpu()))
+    first_=np.array(im.detach().cpu().permute(1, 2, 0).numpy())
+    cv2.imwrite('./1st.png', first_)
+    pointclouds = rgbd2pcd(im, depth, w2c, k, def_pix, pix_ones, show_depth=(RENDER_MODE == 'depth'))
+    ### 360 rotation
+    frames=[]
+    while len(frames)<10:
+        passed_time = time.time() - start_time
+        passed_frames = passed_time * fps
+        t = int(passed_frames % num_timesteps)
+        num_loops=1.4
+        y_angle = 360*t*num_loops / num_timesteps
+        frame=render_pointcloud_pytorch3d(w, h, image_size, radius, pointclouds, extract_yaw_angle(w2c))
+        array = np.clip(frame, 0, 1)  # Assuming the array values are scaled between 0 and 1
+        array = (array * 255).astype(np.uint8)  # Scale to 0-255 and convert to uint8
+        frame = Image.fromarray(array)
+        frames.append(frame)
+    cv2.imwrite(os.path.join('./vis', f"{seq}.png"), np.array(frame))
+    gif_path = os.path.join('./vis', f"{seq}.gif")
+    imageio.mimwrite(gif_path, frames, duration=1000.0*(1/10.0), loop=0)

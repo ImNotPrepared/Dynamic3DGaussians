@@ -26,6 +26,7 @@ from pytorch3d.renderer import (
     AlphaCompositor,
     PerspectiveCameras
 )
+import cv2
 import os
 import imageio
 import torch
@@ -42,9 +43,9 @@ from pytorch3d.transforms import RotateAxisAngle
 from tqdm import tqdm
 
 
-def rgbd2pcd(im, depth, w2c, k, def_pix, pix_ones, show_depth=False, project_to_cam_w_scale=None):
-    d_near = 1.5
-    d_far = 6
+def rgbd2pcd(im, depth, w2c, k, def_pix, pix_ones, show_depth=False, project_to_cam_w_scale=None,camera=None):
+    d_near = 0.1
+    d_far = 10
     invk = torch.inverse(torch.tensor(k).cuda().float())
     c2w = torch.inverse(torch.tensor(w2c).cuda().float())
     radial_depth = depth[0].reshape(-1)
@@ -55,7 +56,16 @@ def rgbd2pcd(im, depth, w2c, k, def_pix, pix_ones, show_depth=False, project_to_
     if project_to_cam_w_scale is not None:
         pts_cam = project_to_cam_w_scale * pts_cam / z_depth[:, None]
     pts4 = torch.concat((pts_cam, pix_ones), 1)
-    pts = (c2w @ pts4.T).T[:, :3]
+    if camera:
+        print(pts_cam.shape)
+        camera =camera.to(pts_cam.device)
+        pts = camera.unproject_points(pts_cam, world_coordinates=True)
+    else:
+
+        pts = (c2w @ pts4.T).T[:, :3]
+    #
+
+
     if show_depth:
         cols = ((z_depth - d_near) / (d_far - d_near))[:, None].repeat(1, 3)
     else:
@@ -65,7 +75,9 @@ def rgbd2pcd(im, depth, w2c, k, def_pix, pix_ones, show_depth=False, project_to_
     cols = cols.contiguous().float().cpu()
     pointclouds = Pointclouds(points=[pts], features=[cols])
 
-    return pointclouds
+    return pointclouds, pts, cols
+
+
 def load_scene_data(seq, exp, seg_as_col=False):
     params = dict(np.load(f"./output/{exp}/{seq}/params.npz"))
     params = {k: torch.tensor(v).cuda().float() for k, v in params.items()}
@@ -152,48 +164,95 @@ def init_camera(w, h, y_angle=0., center_dist=2.4, cam_height=1.3, f_ratio=0.82)
     k = np.array([[f_ratio * w, 0, w / 2], [0, f_ratio * w, h / 2], [0, 0, 1]])
     return w2c, k
 
-def setup_pytorch3d_camera(h, w2c, k):
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Extract rotation (R) and translation (T) from the w2c matrix
+import torch
+import numpy as np
+from pytorch3d.renderer import FoVPerspectiveCameras
+
+def setup_pytorch3d_camera(h, w2c, k, y_angle, device):
+    device='cpu'
     R = torch.from_numpy(w2c[:3, :3]).float().to(device)
     T = torch.from_numpy(w2c[:3, 3]).float().unsqueeze(0).to(device)
 
-    # Intrinsic parameters (focal length and principal point)
+    # Rotation matrix around the y-axis
+    theta = np.radians(y_angle)  # Convert angle to radians
+    c, s = np.cos(theta), np.sin(theta)
+    Ry = torch.tensor([[c, 0., s], [0., 1., 0.], [-s, 0., c]], device=device).float()  # Ensure Ry is also Float type
+
+    # Apply rotation to the translation part
+    T_rotated = torch.mm(Ry, T.t()).t()
+
     fx, fy = k[0, 0], k[1, 1]
     cx, cy = k[0, 2], k[1, 2]
+    fov = 2 * np.arctan(h / (2 * fy)) * 180 / np.pi
 
-    # Convert to PyTorch3D's FoVPerspectiveCameras
-    # Note: PyTorch3D uses a slightly different camera model, so some adjustments might be needed
-    cameras = FoVPerspectiveCameras(device=device, R=R[None, :], T=T, fov=2*np.arctan(h/(2*fy))*180/np.pi)
-
+    cameras = FoVPerspectiveCameras(device=device, R=R[None, :], T=T_rotated, fov=fov)
     return cameras
+from pytorch3d.renderer import PointsRenderer, PointsRasterizer, PointsRasterizationSettings, AlphaCompositor
+from PIL import Image
+import numpy as np
 
+# Assuming 'image_array' is your NumPy array
 
-def render_pointcloud_pytorch3d(w, h, image_size, radius, pointclouds, y_angle):
-    # Assuming the use of a function `get_device` to determine the rendering device (CPU or GPU)
-    device = get_device()
-    
-    # Move the pointcloud to the selected device
-    pointclouds = pointclouds.to(device)
-    
-    # Create a renderer with specified settings
+def render_pointcloud_pytorch3d_360(w, h, w2c, k, image_size, radius, pointclouds, device, num_views=36):
+    device='cuda'
     renderer = PointsRenderer(
         rasterizer=PointsRasterizer(
             raster_settings=PointsRasterizationSettings(
-                image_size=image_size,  # Specify your desired image size
-                radius=radius,  # Specify the radius for points
+                image_size=image_size,
+                radius=radius,
             )
         ),
-        compositor=AlphaCompositor(background_color=(1, 1, 1))  # Specify your desired background color
+        compositor=AlphaCompositor(background_color=(1, 1, 1))
     ).to(device)
 
-    w2c, k = init_camera(w, h, y_angle)
-    cameras = setup_pytorch3d_camera(h, w2c, k)
-    images = renderer(pointclouds, cameras=cameras.to(device))
-    
-    # Convert the rendered tensor to a NumPy array for visualization (e.g., using matplotlib)
-    rendered_image = images[0, ..., :3].detach().cpu().numpy()
+    rendered_images = []
+    for i in range(num_views):
+        y_angle = 360 * i / num_views  # Distribute angles evenly over 360 degrees
+        cameras = setup_pytorch3d_camera(h, w2c, k, y_angle, device)
+        images = renderer(pointclouds, cameras=cameras)
+        rendered_image = images[0, ..., :3].detach().cpu().numpy()
+        #img = Image.fromarray(rendered_image)
+        #img.save(f'/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/vis/frames/frame_{i}.png')
+        #cv2.imwrite(,rendered_image)
+        rendered_images.append(rendered_image)
 
-    return rendered_image
+    return rendered_images
+import pytorch3d
+def render_pointcloud_pytorch3d_360_plus(w, h, w2c, k, image_size, radius, pointclouds, device, num_views=36):
+    device='cuda'
+    renderer = PointsRenderer(
+        rasterizer=PointsRasterizer(
+            raster_settings=PointsRasterizationSettings(
+                image_size=image_size,
+                radius=radius,
+            )
+        ),
+        compositor=AlphaCompositor(background_color=(1, 1, 1))
+    ).to(device)
 
+    num_views=12
+    angles = np.linspace(-180, 180, num_views, endpoint=False)
+    rendered_images = []
+    for i in range(num_views):
+        R, T = pytorch3d.renderer.look_at_view_transform(
+        dist=3,
+        elev=15,
+        azim=angles[i],
+    )
+        T[:] *= 0.1
+        cameras = pytorch3d.renderer.FoVPerspectiveCameras(
+        R=R,
+        T=T,
+        device=device
+    )
+        
+        pointclouds=pointclouds.to(device)
+        print(pointclouds.device, cameras.device)
+        images = renderer(pointclouds, cameras=cameras)
+        rendered_image = images[0, ..., :3].detach().cpu().numpy()
+        #img = Image.fromarray(rendered_image)
+        #img.save(f'/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/vis/frames/frame_{i}.png')
+        #cv2.imwrite(,rendered_image)
+        rendered_images.append(rendered_image)
+    return rendered_images

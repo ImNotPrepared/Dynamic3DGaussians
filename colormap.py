@@ -1,4 +1,6 @@
 import numpy as np
+import torch
+
 
 colormap = np.array([
     # 0     ,         0,         0,

@@ -1,6 +1,7 @@
 
 import torch
 import numpy as np
+import pandas as pd
 import open3d as o3d
 import time
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
@@ -17,57 +18,211 @@ from pytorch3d.renderer import (
 import os
 import imageio
 import torch
+import pytorch3d
 from pytorch3d.renderer.cameras import FoVPerspectiveCameras
 import cv2
 
 from PIL import Image
 from vis_utils import *
-w, h = 512, 288
-near, far = 0.01, 10.0
+
+near, far = 0.01, 50.0
 view_scale = 1
 
-fps = 20
-traj_frac = 90  # 4% of points
-traj_length = 15
+fps = 10
 
-def_pix = torch.tensor(
-    np.stack(np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5, 1), -1).reshape(-1, 3)).cuda().float()
-pix_ones = torch.ones(h * w, 1).cuda().float()
-image_size, radius = (h, w), 0.01
-RENDER_MODE='color'
+def load_data(cam_id, use_ndc=False, resize=True):
+    s_id, e_id = int(cam_id)-1, int(cam_id)
+    df = pd.read_csv('/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/cmu_bike/gopro_calibs.csv')[s_id:e_id]
 
+    intrinsics =np.array(df[['image_width','image_height','intrinsics_0','intrinsics_1','intrinsics_2','intrinsics_3']].values.tolist())
+    if resize:
+      for item in intrinsics:
+        w, h = 256, 144
+        org_width, org_height, fx, fy, cx, cy = item
+        ratio = w/org_width
+        assert org_width/w==org_height/h
+        fx *= ratio
+        fy *= ratio
+        cx *= ratio
+        cy *= ratio
+    
+    import torch
+    q_values = df[['qw_world_cam', 'qx_world_cam', 'qy_world_cam', 'qz_world_cam']].values[0]#[3,0,1,2]
+    t_values = df[['tx_world_cam', 'ty_world_cam', 'tz_world_cam']].values[0]
+    q_values_tensor = torch.tensor(q_values, dtype=torch.float64)
+    t_values_tensor = torch.tensor(t_values, dtype=torch.float64)
+    
+    f = fx 
+    px, py = cx, cy
+    k = 0
+    l = min(w, h)  # Ensure 'w' (width) and 'h' (height) are defined appropriately
+
+    focal_length_ndc = torch.tensor([[f, f]], dtype=torch.float32)
+    principal_point_ndc = torch.tensor([[px, py]], dtype=torch.float32)
+
+
+    from pytorch3d.transforms import quaternion_to_matrix, Translate
+    import torch
+
+    print(q_values_tensor)
+    R = quaternion_to_matrix(q_values_tensor.unsqueeze(0))  
+    T = t_values_tensor.unsqueeze(0)
+    camera = PerspectiveCameras(
+        R = R,
+        T = T,
+        focal_length=focal_length_ndc,
+        principal_point=principal_point_ndc,
+        device=torch.device("cpu") 
+    )
+    return camera, camera, camera, R, T, fx, cx, cy
+
+def get_points_renderer(image_size=512, radius=0.01, background_color=(1, 1, 1)):
+    raster_settings = PointsRasterizationSettings(image_size=image_size, radius=radius,)
+    renderer = PointsRenderer(
+        rasterizer=PointsRasterizer(raster_settings=raster_settings),
+        compositor=AlphaCompositor(background_color=background_color),
+    )
+    return renderer
+def render_360_pc(point_cloud, image_size=256, output_path='./point_cloud.gif', device=None):
+    renderer = get_points_renderer(image_size=image_size)
+    num_views = 36
+    angles = np.linspace(-180, 180, num_views, endpoint=False)
+    images = []
+    for i in range(num_views):
+        R, T = pytorch3d.renderer.look_at_view_transform(
+        dist=3,
+        elev=0,
+        azim=angles[i],
+    )
+        cameras = pytorch3d.renderer.FoVPerspectiveCameras(
+        R=R,
+        T=T,
+        device=device
+    )
+        
+        rend = renderer(point_cloud, cameras=cameras)
+        rend = rend[0, ..., :3].cpu().numpy()
+
+        image = Image.fromarray((rend * 255).astype(np.uint8))
+
+        images.append(np.array(image))
+    imageio.mimsave(output_path, images, fps=5)
 
 def visualize(seq, exp):
     start_time = time.time()
+    import json
     scene_data, is_fg = load_scene_data(seq, exp)
-    ## N_frames * dict_keys(['means3D', 'colors_precomp', 'rotations', 'opacities', 'scales', 'means2D'])
-    #print(scene_data, len(scene_data), scene_data[0].keys())
-    w2c, k = init_camera(w,h)
-    num_timesteps = len(scene_data)
-    im, depth = render(w2c, k, scene_data[0], w, h, near, far)
-    first_=np.array(im.detach().cpu().permute(1, 2, 0).numpy())
-    cv2.imwrite('./1st.png', first_)
-    pointclouds = rgbd2pcd(im, depth, w2c, k, def_pix, pix_ones, show_depth=(RENDER_MODE == 'depth'))
-    ### 360 rotation
-    frames=[]
-    while len(frames)<10:
-        passed_time = time.time() - start_time
-        passed_frames = passed_time * fps
-        t = int(passed_frames % num_timesteps)
-        num_loops = 1.4
-        y_angle = 360*t*num_loops / num_timesteps
-        frame=render_pointcloud_pytorch3d(w, h, image_size, radius, pointclouds, y_angle)
-        array = np.clip(frame, 0, 1)  # Assuming the array values are scaled between 0 and 1
-        array = (array * 255).astype(np.uint8)  # Scale to 0-255 and convert to uint8
-        frame = Image.fromarray(array)
-        frames.append(frame)
-    gif_path = os.path.join('./vis', f"{seq}.gif")
-    imageio.mimwrite(gif_path, frames, duration=1000.0*(1/10.0), loop=0)
+    file_path = os.path.join('./data_ego', seq, 'train_meta.json') 
+    with open(file_path, 'r') as file:
+        json_file = json.load(file)
+    
+
+    points_list=[]
+    rbgs_list=[]
+    #### BEGIN ####
+    frame_index, cam_index = 0, 0 
+    for cam_index in range(5):
+      h, w = json_file['hw'][cam_index]
+      def_pix = torch.tensor(
+        np.stack(np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5, 1), -1).reshape(-1, 3)).cuda().float()
+      pix_ones = torch.ones(h * w, 1).cuda().float()
+      image_size, radius = (h, w), 0.01
+      RENDER_MODE='color'
+      w2c, k = (np.array((json_file['w2c'])[0][cam_index]), np.array(json_file['k'][0][cam_index]))
+      w2c=np.linalg.inv(w2c)
+
+      camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
+
+      im, depth = render(w2c, k, scene_data[0], w, h, near, far)
+          
+      first_=np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
+      
+      cv2.imwrite(f'./visuals/trainview/sys/cam_{cam_index}.png', first_)
+      pointclouds, pts, cols = rgbd2pcd(im, depth, w2c, k, def_pix, pix_ones, show_depth=(RENDER_MODE == 'depth'), )
+      point_cloud = Pointclouds(points=[pts], features=[cols]).to('cuda')
+      device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+      render_360_pc(point_cloud, image_size=(144,256), output_path='./point_cloud.gif', device='cuda')
+      points_list.append(pts)
+      rbgs_list.append(cols)
+      
+
+    from pytorch3d.io import save_ply
+    points = torch.cat(points_list, dim=0)
+    rgb=torch.cat(rbgs_list, dim=0)
+    data=np.zeros((len(points), 7))
+    data[:, :3], data[:, 3:6] = points, rgb
+    data[:, 6] = np.ones((len(points)))
+    np.savez("final_pt_cld.npz", data=data)
+    print(f'Saved {len(data)}!')
+
+    points = torch.cat(points_list, dim=0)
+    rgb = torch.cat(rbgs_list, dim=0)
+
+    # Convert RGB from 0-255 to 0-1 if necessary
+    rgb = rgb.float() / 255.0
+
+    # Save to PLY
+    save_ply("final_pt_cld.ply", points)
+def visualize_train(seq, exp):
+    start_time = time.time()
+    import json
+    scene_data, is_fg = load_scene_data(seq, exp)
+    file_path = os.path.join('./data_ego', seq, 'train_meta.json') 
+    with open(file_path, 'r') as file:
+        json_file = json.load(file)
+    h, w = json_file['hw'][1]
+    def_pix = torch.tensor(
+        np.stack(np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5, 1), -1).reshape(-1, 3)).cuda().float()
+    pix_ones = torch.ones(h * w, 1).cuda().float()
+    image_size, radius = (h, w), 0.01
+    RENDER_MODE='color'
+    points_list=[]
+    rbgs_list=[]
+
+    #### BEGIN ####
+    def initialize_params_zoe():
+        #init_pt_cld = np.load(f"init_pt_cld.npz")["data"]
+        init_pt_cld = np.load(f"/data3/zihanwa3/Capstone-DSR/Appendix/ZoeDepth/init_pt_cld.npz")["data"]
+        
+        return torch.tensor(init_pt_cld[:, :3], dtype=torch.float), torch.tensor(init_pt_cld[:, 3:6],dtype=torch.float)
+    pts, cols=initialize_params_zoe()
+    for cam_index in range(1, 5):
+      print(np.array((json_file['w2c'])))
+      w2c, k = (np.array((json_file['w2c'])[0][cam_index])[None,...], np.array(json_file['k'][0][cam_index])[None,...])
+      w2c, k = (np.array((json_file['w2c'])[0][cam_index]), np.array(json_file['k'][0][cam_index]))
+      print(w2c, k)
+      w2c=np.linalg.inv(w2c)
+      
+      _, _, camera, R, t, f_x, c_x, c_y =load_data(cam_index, resize=True)
+      print('shape',camera.transform_points(pts[None,...]).shape)
+      screen_points = camera.transform_points(pts[None, ...])[0]
+
+    # 初始化深度图和二进制掩码
+      depth_map = torch.full((h, w), float('inf'))
+      binary_mask = torch.zeros((h, w))
+
+    # 更新深度图和二进制掩码
+      for i, (x, y, z) in enumerate(screen_points):
+          x_pixel, y_pixel = int(x), int(y)
+          if 0 <= x_pixel < w and 0 <= y_pixel < h:
+            current_depth = z
+            if current_depth < depth_map[y_pixel, x_pixel]:  # 检查深度，仅更新最近的点
+              depth_map[y_pixel, x_pixel] = current_depth
+
+      first_=np.array(depth_map.detach().cpu().numpy()) * 255
+      
+      cv2.imwrite(f'./visuals/trainview/gt/cam_{cam_index}.png', first_)
+      
+      point_cloud = Pointclouds(points=[pts], features=[cols]).to('cuda')
+      device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+      render_360_pc(point_cloud, image_size=(144,256), output_path='./point_cloud.gif', device='cuda')
+
 
 if __name__ == "__main__":
-    exp_name = "exp3"
+    exp_name = "debug_3"
     for sequence in ["cmu_bike"]:
-        visualize(sequence, exp_name)
+        #visualize(sequence, exp_name)
+        visualize_train(sequence, exp_name)
 
 
 '''
