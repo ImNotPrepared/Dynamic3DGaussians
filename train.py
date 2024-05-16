@@ -39,7 +39,7 @@ def get_dataset(t, md, seq, mode='stat_only'):
           dataset.append({'cam': cam, 'im': im, 'seg': seg_col, 'id': c, 'gt_depth':depth, 'mask':seg})
       
     elif mode=='ego_only':
-      for t in range(20):
+      for t in range(1400):
         c=0
         h, w = md['hw'][c]
         k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
@@ -186,11 +186,12 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
     losses['im'] = 0.8 * l1_loss_v1(im, curr_data['im']) + 0.2 * (1.0 - calc_ssim(im, curr_data['im']))
 
     def held_stat_loss(stat_dataset):
+        losses = 0
         for data in stat_dataset:
             im, radius, _, = Renderer(raster_settings=data['cam'])(**rendervar)
             curr_id = data['id']
             im = torch.exp(params['cam_m'][curr_id])[:, None, None] * im + params['cam_c'][curr_id][:, None, None]
-            losses = 0.8 * l1_loss_v1(im, data['im']) + 0.2 * (1.0 - calc_ssim(im, data['im']))
+            losses += 0.8 * l1_loss_v1(im, data['im']) + 0.2 * (1.0 - calc_ssim(im, data['im']))
         return losses
 
     losses['stat_im']=held_stat_loss(stat_dataset)
@@ -242,7 +243,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
         losses['bg'] = l1_loss_v2(bg_pts, variables["init_bg_pts"]) + l1_loss_v2(bg_rot, variables["init_bg_rot"])
         losses['soft_col_cons'] = l1_loss_v2(params['rgb_colors'], variables["prev_col"])
 
-    loss_weights = {'im': 5.0, 'seg': 3.0, 'rigid': 4.0, 'rot': 4.0, 'iso': 2.0, 'floor': 2.0, 'bg': 20.0, 'stat_im':20.0, 'depth':5.0,
+    loss_weights = {'im': 10.0, 'seg': 3.0, 'rigid': 4.0, 'rot': 4.0, 'iso': 2.0, 'floor': 2.0, 'bg': 20.0, 'stat_im':5.0, 'depth':10.0,
                     'soft_col_cons': 0.01}
     loss = sum([loss_weights[k] * v for k, v in losses.items()])
     seen = radius > 0
@@ -325,7 +326,7 @@ def train(seq, exp):
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
 
-        num_iter_per_timestep = int(1e5) if is_initial_timestep else 2
+        num_iter_per_timestep = int(1e3) if is_initial_timestep else 2
         progress_bar = tqdm(range(num_iter_per_timestep), desc=f"timestep {t}")
         for i in range(num_iter_per_timestep):
             curr_data = get_batch(todo_dataset, dataset)
