@@ -171,19 +171,31 @@ def visualize(seq, exp):
     rbgs_list=[]
     #### BEGIN ####
     frame_index, cam_index = 0, 0 
-    for frame_index in range(5):
+
+    tto=[]
+
+
+    for cam_index in range(100):
       h, w = json_file['hw'][cam_index]
       def_pix = torch.tensor(
         np.stack(np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5, 1), -1).reshape(-1, 3)).cuda().float()
       pix_ones = torch.ones(h * w, 1).cuda().float()
       image_size, radius = (h, w), 0.01
       RENDER_MODE='color'
-      w2c, k = (np.array((json_file['w2c'])[0][cam_index]), np.array(json_file['k'][0][cam_index]))
+      w2c, k = (np.array((json_file['w2c'])[frame_index][100]), np.array(json_file['k'][frame_index][cam_index]))
+      print(w2c)
       w2c=np.linalg.inv(w2c)
+      camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
+      im, depth = render(w2c, k, scene_data[0], w, h, near, far)
+          
+      first_=np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
+      image = Image.fromarray((first_).astype(np.uint8))
+      #cv2.imwrite(f'./visuals/trainview/sys/{cam_index}/{i}.png', first_)
+      tto.append(image)
+    imageio.mimsave(f'./visuals/trainview/sys/ego.gif', tto, fps=10)
 
 
-
-    for cam_index in range(5):
+    for cam_index in range(1400, 1404):
       h, w = json_file['hw'][cam_index]
       def_pix = torch.tensor(
         np.stack(np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5, 1), -1).reshape(-1, 3)).cuda().float()
@@ -218,7 +230,7 @@ def visualize(seq, exp):
         first_=np.array(im[:, :, ::-1]) 
         #cv2.imwrite(f'./visuals/trainview/sys/{cam_index}/{i}.png', first_)
         tto.append(image)
-      imageio.mimsave(f'./visuals/trainview/sys/{cam_index}/aaa.gif', tto, fps=10)
+      #imageio.mimsave(f'./visuals/trainview/sys/{cam_index}/aaa.gif', tto, fps=10)
       
     num_frames=20
     angles = torch.linspace(0, 2 * np.pi, num_frames)  # 0 to 360 degrees in radians
