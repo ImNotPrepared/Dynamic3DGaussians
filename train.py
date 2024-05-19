@@ -73,7 +73,7 @@ def get_dataset(t, md, seq, mode='stat_only'):
       t=0
       for c in range(1400):
         h, w = md['hw'][c]
-        k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
+        k, w2c =  md['k'][t][c], (md['w2c'][t][c])
         cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
         fn = md['fn'][t][c]
         im = np.array(copy.deepcopy(Image.open(f"/scratch/zihanwa3/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/{seq}/ims/{fn}")))
@@ -83,8 +83,7 @@ def get_dataset(t, md, seq, mode='stat_only'):
         non_zero_pixels = np.count_nonzero(seg)
         total_pixels = seg.size
         mask_ratio = non_zero_pixels / total_pixels
-        if mask_ratio>0.5:
-
+        if mask_ratio>=0.5:
             #print(seg.shape)
             ############################## First Frame Depth ##############################
             mask_path=f'/scratch/zihanwa3/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/cmu_bike/depth/{int(t)}/depth_{c}.npz'
@@ -95,7 +94,7 @@ def get_dataset(t, md, seq, mode='stat_only'):
       for c in range(1400, 1404):
 
         h, w = md['hw'][c]
-        k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
+        k, w2c =  md['k'][t][c], (md['w2c'][t][c])
         cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
         fn = md['fn'][t][c]
         im = np.array(copy.deepcopy(Image.open(f"/scratch/zihanwa3/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/{seq}/ims/{fn}")))
@@ -182,8 +181,8 @@ def initialize_params(seq, md):
 
 def initialize_optimizer(params, variables):
     lrs = {
-        'means3D': 0.00016 * variables['scene_radius'],
-        'rgb_colors': 0.025,
+        'means3D': 0.0000016 * variables['scene_radius'],
+        'rgb_colors': 0.0025,
         'seg_colors': 0.0,
         'unnorm_rotations': 0.001,
         'logit_opacities': 0.05,
@@ -203,7 +202,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
     curr_id = curr_data['id']
     im = torch.exp(params['cam_m'][curr_id])[:, None, None] * im + params['cam_c'][curr_id][:, None, None]
     losses['im'] = 0.8 * l1_loss_v1(im, curr_data['im']) + 0.2 * (1.0 - calc_ssim(im, curr_data['im']))
-
+    
     def held_stat_loss(stat_dataset):
 
         losses = 0 
@@ -221,8 +220,8 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
                             (1 - pearson_corrcoef(1 / (ground_truth_depth + 200.), depth_pred))
             )
         return losses
-
-    losses['stat_im']=held_stat_loss(stat_dataset)
+    if stat_dataset:
+        losses['stat_im']=held_stat_loss(stat_dataset)
 
     variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
     ground_truth_depth = curr_data['gt_depth']
@@ -271,7 +270,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
         losses['bg'] = l1_loss_v2(bg_pts, variables["init_bg_pts"]) + l1_loss_v2(bg_rot, variables["init_bg_rot"])
         losses['soft_col_cons'] = l1_loss_v2(params['rgb_colors'], variables["prev_col"])
 
-    loss_weights = {'im': 5.0, 'seg': 3.0, 'rigid': 4.0, 'rot': 4.0, 'iso': 2.0, 'floor': 2.0, 'bg': 20.0, 'stat_im':0.00, 'depth': 0.0,
+    loss_weights = {'im': 3.0, 'seg': 3.0, 'rigid': 4.0, 'rot': 4.0, 'iso': 2.0, 'floor': 2.0, 'bg': 20.0, 'stat_im':0.00, 'depth': 3.0,
                     'soft_col_cons': 0.01}
     loss = sum([loss_weights[k] * v for k, v in losses.items()])
     seen = radius > 0
@@ -354,12 +353,12 @@ def train(seq, exp):
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
 
-        num_iter_per_timestep = int(3e5) if is_initial_timestep else 2
+        num_iter_per_timestep = int(4.7e4) if is_initial_timestep else 2
         progress_bar = tqdm(range(num_iter_per_timestep), desc=f"timestep {t}")
         for i in range(num_iter_per_timestep):
             curr_data = get_batch(todo_dataset, dataset)
 
-            loss, variables = get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=stat_dataset)
+            loss, variables = get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=None)
             loss.backward()
             with torch.no_grad():
                 report_progress(params, dataset[0], i, progress_bar)
