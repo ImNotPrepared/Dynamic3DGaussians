@@ -175,7 +175,7 @@ def visualize(seq, exp):
     tto=[]
 
 
-    for cam_index in range(100):
+    for cam_index in range(1400):
       h, w = json_file['hw'][cam_index]
       def_pix = torch.tensor(
         np.stack(np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5, 1), -1).reshape(-1, 3)).cuda().float()
@@ -184,7 +184,7 @@ def visualize(seq, exp):
       RENDER_MODE='color'
       w2c, k = (np.array((json_file['w2c'])[frame_index][cam_index]), np.array(json_file['k'][frame_index][cam_index]))
       #print(w2c)
-      #w2c=np.linalg.inv(w2c)
+      w2c=np.linalg.inv(w2c)
       camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
       im, depth = render(w2c, k, scene_data[0], w, h, near, far)
           
@@ -192,10 +192,10 @@ def visualize(seq, exp):
       image = Image.fromarray((first_).astype(np.uint8))
       #cv2.imwrite(f'./visuals/trainview/sys/{cam_index}/{i}.png', first_)
       tto.append(image)
-    imageio.mimsave(f'./visuals/trainview/sys/ego.gif', tto, fps=10)
+    imageio.mimsave(f'./visuals/trainview/sys/ego.gif', tto, fps=6)
 
-
-    for cam_index in range(1400, 1404):
+    interval=27
+    for cam_index in range(1400,1404):
       h, w = json_file['hw'][cam_index]
       def_pix = torch.tensor(
         np.stack(np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5, 1), -1).reshape(-1, 3)).cuda().float()
@@ -203,7 +203,7 @@ def visualize(seq, exp):
       image_size, radius = (h, w), 0.01
       RENDER_MODE='color'
       w2c, k = (np.array((json_file['w2c'])[0][cam_index]), np.array(json_file['k'][0][cam_index]))
-      ##w2c=np.linalg.inv(w2c)
+      w2c=np.linalg.inv(w2c)
 
       camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
 
@@ -212,6 +212,10 @@ def visualize(seq, exp):
       first_=np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
       
       cv2.imwrite(f'./visuals/trainview/sys/cam_{cam_index}.png', first_)
+      first_=np.array(depth.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
+      
+      cv2.imwrite(f'./visuals/trainview/sys/depth_{cam_index}.png', first_)
+
       pointclouds, pts, cols = rgbd2pcd(im, depth, w2c, k, def_pix, pix_ones, show_depth=(RENDER_MODE == 'depth'), )
       point_cloud = Pointclouds(points=[pts], features=[cols]).to('cuda')
       device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -230,7 +234,7 @@ def visualize(seq, exp):
         first_=np.array(im[:, :, ::-1]) 
         #cv2.imwrite(f'./visuals/trainview/sys/{cam_index}/{i}.png', first_)
         tto.append(image)
-      imageio.mimsave(f'./visuals/trainview/sys/{cam_index-1399}/aaa.gif', tto, fps=10)
+      imageio.mimsave(f'./visuals/trainview/sys/{cam_index-1399}_aaa.gif', tto, fps=10)
       
     num_frames=20
     angles = torch.linspace(0, 2 * np.pi, num_frames)  # 0 to 360 degrees in radians
@@ -276,65 +280,10 @@ def visualize(seq, exp):
 
     # Save to PLY
     save_ply("final_pt_cld.ply", points)
-def visualize_train(seq, exp):
-    start_time = time.time()
-    import json
-    scene_data, is_fg = load_scene_data(seq, exp)
-    file_path = os.path.join('./data_ego', seq, 'train_meta.json') 
-    with open(file_path, 'r') as file:
-        json_file = json.load(file)
-    h, w = json_file['hw'][1]
-    def_pix = torch.tensor(
-        np.stack(np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5, 1), -1).reshape(-1, 3)).cuda().float()
-    pix_ones = torch.ones(h * w, 1).cuda().float()
-    image_size, radius = (h, w), 0.01
-    RENDER_MODE='color'
-    points_list=[]
-    rbgs_list=[]
-
-    #### BEGIN ####
-    def initialize_params_zoe():
-        #init_pt_cld = np.load(f"init_pt_cld.npz")["data"]
-        init_pt_cld = np.load(f"/data3/zihanwa3/Capstone-DSR/Appendix/ZoeDepth/init_pt_cld.npz")["data"]
-        
-        return torch.tensor(init_pt_cld[:, :3], dtype=torch.float), torch.tensor(init_pt_cld[:, 3:6],dtype=torch.float)
-    pts, cols=initialize_params_zoe()
-    for cam_index in range(1, 5):
-      print(np.array((json_file['w2c'])))
-      w2c, k = (np.array((json_file['w2c'])[0][cam_index])[None,...], np.array(json_file['k'][0][cam_index])[None,...])
-      w2c, k = (np.array((json_file['w2c'])[0][cam_index]), np.array(json_file['k'][0][cam_index]))
-      print(w2c, k)
-      w2c=np.linalg.inv(w2c)
-      
-      _, _, camera, R, t, f_x, c_x, c_y =load_data(cam_index, resize=True)
-      print('shape',camera.transform_points(pts[None,...]).shape)
-      screen_points = camera.transform_points(pts[None, ...])[0]
-
-    # 初始化深度图和二进制掩码
-      depth_map = torch.full((h, w), float('inf'))
-      binary_mask = torch.zeros((h, w))
-
-    # 更新深度图和二进制掩码
-      for i, (x, y, z) in enumerate(screen_points):
-          x_pixel, y_pixel = int(x), int(y)
-          if 0 <= x_pixel < w and 0 <= y_pixel < h:
-            current_depth = z
-            if current_depth < depth_map[y_pixel, x_pixel]:  # 检查深度，仅更新最近的点
-              depth_map[y_pixel, x_pixel] = current_depth
-
-      first_=np.array(depth_map.detach().cpu().numpy()) * 255
-      
-      cv2.imwrite(f'./visuals/trainview/gt/cam_{cam_index}.png', first_)
-      
-      point_cloud = Pointclouds(points=[pts], features=[cols]).to('cuda')
-      device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-      render_360_pc(point_cloud, image_size=(144,256), output_path='./point_cloud.gif', device='cuda')
-      for i, pose in enumerate(poses):
-        print(pose.shape)
 
 
 if __name__ == "__main__":
-    exp_name = "debug_3"
+    exp_name = "FULL"
     for sequence in ["cmu_bike"]:
         visualize(sequence, exp_name)
         #visualize_train(sequence, exp_name)
