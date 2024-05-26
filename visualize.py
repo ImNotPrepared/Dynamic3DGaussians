@@ -133,114 +133,215 @@ def get_points_renderer(image_size=512, radius=0.01, background_color=(1, 1, 1))
         compositor=AlphaCompositor(background_color=background_color),
     )
     return renderer
+
+# Function to convert cartesian coordinates to spherical coordinates (longitude, latitude, radius)
+def cartesian_to_spherical(cartesian_coords):
+    x, y, z = cartesian_coords
+    radius = np.sqrt(x**2 + y**2 + z**2)
+    lon = np.arctan2(y, x)
+    lat = np.arcsin(z / radius)
+    return lon, lat, radius
+
+# Convert spherical coordinates (longitude, latitude, radius) to cartesian coordinates
+def spherical_to_cartesian(lon, lat, radius):
+    x = radius * np.cos(lat) * np.cos(lon)
+    y = radius * np.cos(lat) * np.sin(lon)
+    z = radius * np.sin(lat)
+    return np.array([x, y, z])
+
+# Function to interpolate between two points on a sphere
+def spherical_interpolation(p1, p2, num_points):
+    # Convert to spherical coordinates
+    lon1, lat1, _ = cartesian_to_spherical(p1)
+    lon2, lat2, _ = cartesian_to_spherical(p2)
+    
+    # Interpolate angles
+    lons = np.linspace(lon1, lon2, num_points)
+    lats = np.linspace(lat1, lat2, num_points)
+    
+    # Convert back to cartesian coordinates
+    points = np.array([spherical_to_cartesian(lon, lat, 1) for lon, lat in zip(lons, lats)])
+    return points
+
+# Interpolate rotations using Slerp
+def interpolate_rotations(r1, r2, num_points):
+    from scipy.spatial.transform import Rotation as R, Slerp
+    slerp = Slerp([0, 1], R.from_quat([r1, r2]))
+    fractions = np.linspace(0, 1, num_points)
+    interpolated_rotations = slerp(fractions).as_quat()
+    return interpolated_rotations
+
+# Function to interpolate poses between multiple points on a sphere
+def interpolate_between_four(positions, orientations, num_points):
+    interpolated_positions = []
+    interpolated_orientations = []
+
+    for i in range(len(positions)):
+        for j in range(i + 1, len(positions)):
+            p1 = positions[i]
+            p2 = positions[j]
+            r1 = orientations[i]
+            r2 = orientations[j]
+
+            interpolated_positions.append(spherical_interpolation(p1, p2, num_points))
+            interpolated_orientations.append(interpolate_rotations(r1, r2, num_points))
+
+    return np.vstack(interpolated_positions), np.vstack(interpolated_orientations)
+
+
+
 def render_360_pc(point_cloud, image_size=256, output_path='./point_cloud.gif', device=None):
-    renderer = get_points_renderer(image_size=image_size)
-    num_views = 36
-    angles = np.linspace(-180, 180, num_views, endpoint=False)
+    # Create a point cloud renderer
+    import pandas as pd
+    import numpy as np
+    import matplotlib.pyplot as plt
+    from mpl_toolkits.mplot3d import Axes3D
+    from scipy.spatial.transform import Rotation as R, Slerp
+
+    # Load the CSV files
+    file_path_calibs = '/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/cmu_bike/gopro_calibs.csv'
+
+    calib_data = pd.read_csv(file_path_calibs)
+
+    # Extract relevant columns
+    camera_position_data = calib_data[['tx_world_cam', 'ty_world_cam', 'tz_world_cam']]
+    camera_orientation_data = calib_data[['qx_world_cam', 'qy_world_cam', 'qz_world_cam', 'qw_world_cam']]
+
+
+    num_interpolated_points = 20
+
+    # Extract positions and orientations from the dataframe
+    positions = camera_position_data.values
+    orientations = camera_orientation_data.values
+    # Interpolate the poses between all four cameras
+    interpolated_positions, interpolated_orientations = interpolate_between_four(positions, orientations, num_interpolated_points)
+
+
+    raster_settings = PointsRasterizationSettings(image_size=image_size, radius=0.003)
+    renderer = PointsRenderer(
+        rasterizer=PointsRasterizer(raster_settings=raster_settings),
+        compositor=AlphaCompositor()
+    )
+
+    num_views = len(interpolated_positions)
     images = []
+
     for i in range(num_views):
-        R, T = pytorch3d.renderer.look_at_view_transform(
-        dist=3,
-        elev=0,
-        azim=angles[i],
-    )
-        cameras = pytorch3d.renderer.FoVPerspectiveCameras(
-        R=R,
-        T=T,
-        device=device
-    )
-        
+        # Get the position and orientation for the current view
+        position = interpolated_positions[i]
+        orientation = interpolated_orientations[i]
+
+        # Convert orientation quaternion to rotation matrix
+        r = R.from_quat(orientation).as_matrix()
+
+        # Convert position and rotation to tensor
+        R_tensor = torch.tensor(r, dtype=torch.float32).unsqueeze(0)
+        T_tensor = torch.tensor(position, dtype=torch.float32).unsqueeze(0)
+
+        # Create the camera with the current view's rotation and translation
+        cameras = FoVPerspectiveCameras(R=R_tensor, T=T_tensor, device=device)
+
+        # Render the point cloud
         rend = renderer(point_cloud, cameras=cameras)
         rend = rend[0, ..., :3].cpu().numpy()
 
         image = Image.fromarray((rend * 255).astype(np.uint8))
-
         images.append(np.array(image))
+
+    # Save the rendered images as a GIF
     imageio.mimsave(output_path, images, fps=5)
 
 def visualize(seq, exp):
-    start_time = time.time()
+    import os
+    import time
     import json
+    import numpy as np
+    import torch
+    import imageio
+    from PIL import Image
+    from pytorch3d.io import save_ply
+    from pytorch3d.renderer import PerspectiveCameras
+    start_time = time.time()
+
+    # Define base paths
+    base_data_path = './data_ego'
+    base_visuals_path = f'./visuals/{exp}'+'/visuals'
+    base_output_path = './'
+
+    # Ensure directories exist
+    os.makedirs(base_visuals_path, exist_ok=True)
+    os.makedirs(os.path.join(base_visuals_path, 'sys'), exist_ok=True)
+    os.makedirs(os.path.join(base_visuals_path, 'rot'), exist_ok=True)
+    os.makedirs(base_output_path, exist_ok=True)
+
     scene_data, is_fg = load_scene_data(seq, exp)
-    file_path = os.path.join('./data_ego', seq, 'train_meta.json') 
+    file_path = os.path.join(base_data_path, seq, 'train_meta.json') 
+
     with open(file_path, 'r') as file:
         json_file = json.load(file)
-    
 
-    points_list=[]
-    rbgs_list=[]
-    #### BEGIN ####
+    points_list = []
+    rbgs_list = []
     frame_index, cam_index = 0, 0 
-
-    tto=[]
-
+    tto = []
 
     for cam_index in range(1400):
-      h, w = json_file['hw'][cam_index]
-      def_pix = torch.tensor(
-        np.stack(np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5, 1), -1).reshape(-1, 3)).cuda().float()
-      pix_ones = torch.ones(h * w, 1).cuda().float()
-      image_size, radius = (h, w), 0.01
-      RENDER_MODE='color'
-      w2c, k = (np.array((json_file['w2c'])[frame_index][cam_index]), np.array(json_file['k'][frame_index][cam_index]))
-      #print(w2c)
-      w2c=np.linalg.inv(w2c)
-      camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
-      im, depth = render(w2c, k, scene_data[0], w, h, near, far)
+        h, w = json_file['hw'][cam_index]
+        def_pix = torch.tensor(
+            np.stack(np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5, 1), -1).reshape(-1, 3)).cuda().float()
+        pix_ones = torch.ones(h * w, 1).cuda().float()
+        image_size, radius = (h, w), 0.01
+        RENDER_MODE = 'color'
+        w2c, k = (np.array((json_file['w2c'])[frame_index][cam_index]), np.array(json_file['k'][frame_index][cam_index]))
+        w2c = np.linalg.inv(w2c)
+        camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
+        im, depth = render(w2c, k, scene_data[0], w, h, near, far)
           
-      first_=np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
-      image = Image.fromarray((first_).astype(np.uint8))
-      #cv2.imwrite(f'./visuals/trainview/sys/{cam_index}/{i}.png', first_)
-      tto.append(image)
-    imageio.mimsave(f'./visuals/trainview/sys/ego.gif', tto, fps=6)
-
-    interval=27
-    for cam_index in range(1400,1404):
-      h, w = json_file['hw'][cam_index]
-      def_pix = torch.tensor(
-        np.stack(np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5, 1), -1).reshape(-1, 3)).cuda().float()
-      pix_ones = torch.ones(h * w, 1).cuda().float()
-      image_size, radius = (h, w), 0.01
-      RENDER_MODE='color'
-      w2c, k = (np.array((json_file['w2c'])[0][cam_index]), np.array(json_file['k'][0][cam_index]))
-      w2c=np.linalg.inv(w2c)
-
-      camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
-
-      im, depth = render(w2c, k, scene_data[0], w, h, near, far)
-          
-      first_=np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
-      
-      cv2.imwrite(f'./visuals/trainview/sys/cam_{cam_index}.png', first_)
-      first_=np.array(depth.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
-      
-      cv2.imwrite(f'./visuals/trainview/sys/depth_{cam_index}.png', first_)
-
-      pointclouds, pts, cols = rgbd2pcd(im, depth, w2c, k, def_pix, pix_ones, show_depth=(RENDER_MODE == 'depth'), )
-      point_cloud = Pointclouds(points=[pts], features=[cols]).to('cuda')
-      device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-      render_360_pc(point_cloud, image_size=(144,256), output_path='./point_cloud.gif', device='cuda')
-      points_list.append(pts)
-      rbgs_list.append(cols)
-      poses  = render_wander_path(w2c, k)
-
-      tto=[]
-      for i, pose in enumerate(poses):
-        print(pose.shape)
-        camera = PerspectiveCameras(device="cuda", R=pose[None, ...], K=k[None, ...])
-        im, _ = render(pose, k, scene_data[0], w, h, near, far)
-        im=np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
-        image = Image.fromarray((im).astype(np.uint8))
-        first_=np.array(im[:, :, ::-1]) 
-        #cv2.imwrite(f'./visuals/trainview/sys/{cam_index}/{i}.png', first_)
+        first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
+        image = Image.fromarray((first_).astype(np.uint8))
         tto.append(image)
-      imageio.mimsave(f'./visuals/trainview/sys/{cam_index-1399}_aaa.gif', tto, fps=10)
-      
-    num_frames=20
-    angles = torch.linspace(0, 2 * np.pi, num_frames)  # 0 to 360 degrees in radians
 
-    # Record all frames
-    images=[]
+    imageio.mimsave(os.path.join(base_visuals_path, 'sys', 'ego.gif'), tto, fps=6)
+
+    interval = 27
+    for cam_index in range(1400, 1404):
+        h, w = json_file['hw'][cam_index]
+        def_pix = torch.tensor(
+            np.stack(np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5, 1), -1).reshape(-1, 3)).cuda().float()
+        pix_ones = torch.ones(h * w, 1).cuda().float()
+        image_size, radius = (h, w), 0.01
+        RENDER_MODE = 'color'
+        w2c, k = (np.array((json_file['w2c'])[0][cam_index]), np.array(json_file['k'][0][cam_index]))
+        w2c = np.linalg.inv(w2c)
+        camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
+
+        im, depth = render(w2c, k, scene_data[0], w, h, near, far)
+          
+        first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
+        cv2.imwrite(os.path.join(base_visuals_path, 'sys', f'cam_{cam_index}.png'), first_)
+        first_ = np.array(depth.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
+        cv2.imwrite(os.path.join(base_visuals_path, 'sys', f'depth_{cam_index}.png'), first_)
+
+        pointclouds, pts, cols = rgbd2pcd(im, depth, w2c, k, def_pix, pix_ones, show_depth=(RENDER_MODE == 'depth'))
+        point_cloud = Pointclouds(points=[pts], features=[cols]).to('cuda')
+        render_360_pc(point_cloud, image_size=(144, 256), output_path=os.path.join(base_output_path, 'point_cloud.gif'), device='cuda')
+        points_list.append(pts)
+        rbgs_list.append(cols)
+        poses = render_wander_path(w2c, k)
+
+        tto = []
+        for i, pose in enumerate(poses):
+            camera = PerspectiveCameras(device="cuda", R=pose[None, ...], K=k[None, ...])
+            im, _ = render(pose, k, scene_data[0], w, h, near, far)
+            im = np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
+            image = Image.fromarray((im).astype(np.uint8))
+            tto.append(image)
+        imageio.mimsave(os.path.join(base_visuals_path, 'sys', f'{cam_index-1399}_aaa.gif'), tto, fps=10)
+      
+    num_frames = 20
+    angles = torch.linspace(0, 2 * np.pi, num_frames)
+
+    images = []
     for i, angle in enumerate(angles):
         cos_a, sin_a = torch.cos(angle), torch.sin(angle)
         rotation_matrix = torch.tensor([
@@ -249,44 +350,40 @@ def visualize(seq, exp):
             [-sin_a, 0, cos_a, 0],
             [0, 0, 0, 1]
         ], device="cuda").unsqueeze(0)
- 
+
         camera_rotation = rotation_matrix.cpu() @ w2c[None, ...]
         im, depth = render(camera_rotation[0], k, scene_data[0], w, h, near, far)
-        first_=np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
-        im=np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
+        first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
+        im = np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
         image = Image.fromarray((im).astype(np.uint8))
 
-        #image = Image.fromarray(first_)
-        cv2.imwrite(f'./visuals/trainview/rot/cam_{angle}.png', first_)
+        cv2.imwrite(os.path.join(base_visuals_path, 'rot', f'cam_{angle}.png'), first_)
         images.append(np.array(image))
-    imageio.mimsave('./visuals/trainview/rot/cam.gif', images, fps=5)
-
-
-
-    from pytorch3d.io import save_ply
-    points = torch.cat(points_list, dim=0)
-    rgb=torch.cat(rbgs_list, dim=0)
-    data=np.zeros((len(points), 7))
-    data[:, :3], data[:, 3:6] = points, rgb
-    data[:, 6] = np.ones((len(points)))
-    np.savez("final_pt_cld.npz", data=data)
-    print(f'Saved {len(data)}!')
+    imageio.mimsave(os.path.join(base_visuals_path, 'rot', 'cam.gif'), images, fps=5)
 
     points = torch.cat(points_list, dim=0)
     rgb = torch.cat(rbgs_list, dim=0)
+    rgb = rgb.float()
+    point_cloud = Pointclouds(points=[points], features=[rgb]).to('cuda')
+    render_360_pc(point_cloud, image_size=(144, 256), output_path=os.path.join(base_output_path, 'point_cloud.gif'), device='cuda')
+    save_ply(os.path.join(base_output_path, 'final_pt_cld.ply'), points)
+    data = np.zeros((len(points), 7))
+    data[:, :3], data[:, 3:6] = points, rgb
+    data[:, 6] = np.ones((len(points)))
+    np.savez(os.path.join(base_output_path, "final_pt_cld.npz"), data=data)
+    print(f'Saved {len(data)}!')
 
-    # Convert RGB from 0-255 to 0-1 if necessary
-    rgb = rgb.float() / 255.0
 
-    # Save to PLY
-    save_ply("final_pt_cld.ply", points)
 
 
 if __name__ == "__main__":
-    exp_name = "FULL"
-    for sequence in ["cmu_bike"]:
-        visualize(sequence, exp_name)
-        #visualize_train(sequence, exp_name)
+    import os
+    import sys
+    sequence = sys.argv[1]
+    exp_name = sys.argv[2]
+    
+    visualize(sequence, exp_name)
+    # visualize_train(sequence, exp_name)
 
 
 '''
