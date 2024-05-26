@@ -158,12 +158,12 @@ def initialize_params(seq, md):
 
 def initialize_optimizer(params, variables):
     lrs = {
-        'means3D': 0.0000016 * variables['scene_radius'],
-        'rgb_colors': 0.00025,
+        'means3D': 0.00000 * variables['scene_radius'],
+        'rgb_colors': 0.0005,
         'seg_colors': 0.0,
-        'unnorm_rotations': 0.001,
-        'logit_opacities': 0.05,
-        'log_scales': 0.001,
+        'unnorm_rotations': 0.000,
+        'logit_opacities': 0.005,
+        'log_scales': 0.0001,
         'cam_m': 1e-4,
         'cam_c': 1e-4,
     }
@@ -232,7 +232,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
             masked_curr_data_im = data['im'] * top_mask
 
             losses += 0.8 * l1_loss_v1(masked_im, masked_curr_data_im) + 0.2 * (1.0 - calc_ssim(masked_im, masked_curr_data_im))
-
+            '''
             if 'gt_depth' in data.keys():
                 ground_truth_depth = data['gt_depth']
                 depth_pred = depth_pred.squeeze(0)
@@ -242,6 +242,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
                                 (1 - pearson_corrcoef( - ground_truth_depth, depth_pred)),
                                 (1 - pearson_corrcoef(1 / (ground_truth_depth + 200.), depth_pred))
                 )
+            '''
 
         return losses/10
     if stat_dataset:
@@ -340,17 +341,26 @@ def initialize_post_first_timestep(params, variables, optimizer, num_knn=20):
             param_group['lr'] = 0.0
     return variables
 
-def report_stat_progress(params, stat_dataset, i, progress_bar, every_i=1000):
+def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1000):
     if i % every_i == 0:
-        for index, data in enumerate(stat_dataset):
-            if 'antimask' in data.keys():
-                im, _, _, = Renderer(raster_settings=data['cam'])(**params2rendervar(params))
-                curr_id = data['id']
-                im = torch.exp(params['cam_m'][curr_id])[:, None, None] * im + params['cam_c'][curr_id][:, None, None]
-                im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
-                im_wandb = im_wandb.astype(np.uint8)
-                wandb.log({f"rendered_image_{index-1400}": wandb.Image(im_wandb, caption=f"Rendered image at iteration {i}")})
-
+        c=1404
+        t=0
+        h, w = md['hw'][c]
+        k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
+        cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
+        im, _, _, = Renderer(raster_settings=cam)(**params2rendervar(params))
+        im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
+        im_wandb = im_wandb.astype(np.uint8)
+        wandb.log({"held_out_image": wandb.Image(im_wandb, caption=f"Rendered image at iteration {i}")})
+        for c in range(1400,1403):
+            h, w = md['hw'][c]
+            k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
+            cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
+            im, _, _, = Renderer(raster_settings=cam)(**params2rendervar(params))
+            im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
+            im_wandb = im_wandb.astype(np.uint8)
+            wandb.log({f"image_{c-1400}": wandb.Image(im_wandb, caption=f"Rendered image at iteration {i}")})
+            
 
 def report_progress(params, data, i, progress_bar, every_i=100):
     if i % every_i == 0:
@@ -404,7 +414,7 @@ def train(seq, exp):
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
 
-        num_iter_per_timestep = int(7.7e4) if is_initial_timestep else 2
+        num_iter_per_timestep = int(4.7e4) if is_initial_timestep else 2
         progress_bar = tqdm(range(num_iter_per_timestep), desc=f"timestep {t}")
         for i in range(num_iter_per_timestep):
             curr_data = get_batch(todo_dataset, dataset)
@@ -413,7 +423,7 @@ def train(seq, exp):
             loss.backward()
             with torch.no_grad():
                 report_progress(params, dataset[0], i, progress_bar)
-                report_stat_progress(params, stat_dataset, i, progress_bar)
+                report_stat_progress(params, stat_dataset, i, progress_bar, md)
                 if is_initial_timestep:
                     params, variables = densify(params, variables, optimizer, i)
                 assert ((params['means3D'].shape[0]==0) is False)
