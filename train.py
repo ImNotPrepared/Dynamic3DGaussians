@@ -28,7 +28,7 @@ def get_dataset(t, md, seq, mode='stat_only'):
       t=0
       jpg_filenames_2 = np.array(jpg_filenames)+1404
       jpg_filenames_3 = np.array(jpg_filenames_2)+1400
-      for lis in [jpg_filenames, jpg_filenames_2, jpg_filenames_3]:
+      for lis in [jpg_filenames]: # , jpg_filenames_2, jpg_filenames_3
       
         for c in lis:
             h, w = md['hw'][c]
@@ -210,7 +210,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
         losses = 0 
         import random
         random.shuffle(stat_dataset)
-        split_index = len(stat_dataset) // 10
+        split_index = len(stat_dataset) // 8
         stat_dataset = stat_dataset[:split_index]
         for i, data in enumerate(stat_dataset):
 
@@ -340,17 +340,25 @@ def initialize_post_first_timestep(params, variables, optimizer, num_knn=20):
             param_group['lr'] = 0.0
     return variables
 
-def report_stat_progress(params, stat_dataset, i, progress_bar, every_i=1000):
+def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1000):
     if i % every_i == 0:
-        for index, data in enumerate(stat_dataset):
-            if 'antimask' in data.keys():
-                im, _, _, = Renderer(raster_settings=data['cam'])(**params2rendervar(params))
-                curr_id = data['id']
-                im = torch.exp(params['cam_m'][curr_id])[:, None, None] * im + params['cam_c'][curr_id][:, None, None]
-                im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
-                im_wandb = im_wandb.astype(np.uint8)
-                wandb.log({f"rendered_image_{index-1400}": wandb.Image(im_wandb, caption=f"Rendered image at iteration {i}")})
-
+        c=1404
+        t=0
+        h, w = md['hw'][c]
+        k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
+        cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
+        im, _, _, = Renderer(raster_settings=cam)(**params2rendervar(params))
+        im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
+        im_wandb = im_wandb.astype(np.uint8)
+        wandb.log({"held_out_image": wandb.Image(im_wandb, caption=f"Rendered image at iteration {i}")})
+        for c in range(1400,1403):
+            h, w = md['hw'][c]
+            k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
+            cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
+            im, _, _, = Renderer(raster_settings=cam)(**params2rendervar(params))
+            im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
+            im_wandb = im_wandb.astype(np.uint8)
+            wandb.log({f"image_{c-1400}": wandb.Image(im_wandb, caption=f"Rendered image at iteration {i}")})
 
 def report_progress(params, data, i, progress_bar, every_i=100):
     if i % every_i == 0:
@@ -404,7 +412,7 @@ def train(seq, exp):
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
 
-        num_iter_per_timestep = int(7.7e4) if is_initial_timestep else 2
+        num_iter_per_timestep = int(4.7e3) if is_initial_timestep else 2
         progress_bar = tqdm(range(num_iter_per_timestep), desc=f"timestep {t}")
         for i in range(num_iter_per_timestep):
             curr_data = get_batch(todo_dataset, dataset)
@@ -413,7 +421,7 @@ def train(seq, exp):
             loss.backward()
             with torch.no_grad():
                 report_progress(params, dataset[0], i, progress_bar)
-                report_stat_progress(params, stat_dataset, i, progress_bar)
+                report_stat_progress(params, stat_dataset, i, progress_bar,md)
                 if is_initial_timestep:
                     params, variables = densify(params, variables, optimizer, i)
                 assert ((params['means3D'].shape[0]==0) is False)
