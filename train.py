@@ -28,11 +28,11 @@ def get_dataset(t, md, seq, mode='stat_only'):
       t=0
       jpg_filenames_2 = np.array(jpg_filenames)+1404
       jpg_filenames_3 = np.array(jpg_filenames_2)+1400
-      for lis in [jpg_filenames]: # , jpg_filenames_2, jpg_filenames_3
+      for lis in [jpg_filenames]: #, jpg_filenames_2, jpg_filenames_3
       
         for c in lis:
             h, w = md['hw'][c]
-            k, w2c =  md['k'][t][c], (md['w2c'][t][c])
+            k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
             cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
             fn = md['fn'][t][c]
             mask_path=f"/data3/zihanwa3/Capstone-DSR/Appendix/mask_{fn.split('/')[0]}/{fn.split('/')[-1]}"
@@ -57,7 +57,7 @@ def get_dataset(t, md, seq, mode='stat_only'):
       ## load stat
       for c in range(1400, 1403):
           h, w = md['hw'][c]
-          k, w2c =  md['k'][t][c], (md['w2c'][t][c])
+          k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
           cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
 
           fn = md['fn'][t][c]
@@ -95,7 +95,7 @@ def get_stat_dataset(t, md, seq, mode='stat_only'):
     if mode=='stat_only':
       for c in range(1400, 1403):
           h, w = md['hw'][c]
-          k, w2c =  md['k'][t][c], (md['w2c'][t][c])
+          k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
           cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
 
           fn = md['fn'][t][c]
@@ -412,7 +412,7 @@ def train(seq, exp):
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
 
-        num_iter_per_timestep = int(4.7e3) if is_initial_timestep else 2
+        num_iter_per_timestep = int(4.7e4) if is_initial_timestep else 2
         progress_bar = tqdm(range(num_iter_per_timestep), desc=f"timestep {t}")
         for i in range(num_iter_per_timestep):
             curr_data = get_batch(todo_dataset, dataset)
@@ -428,7 +428,7 @@ def train(seq, exp):
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
             for key, value in losses.items():
-              wandb.log({key: value.item(), "iteration": i})
+              wandb.log({key: value, "iteration": i})
             
         progress_bar.close()
         output_params.append(params2cpu(params, is_initial_timestep))

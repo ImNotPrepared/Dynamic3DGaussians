@@ -293,11 +293,11 @@ def visualize(seq, exp):
         image_size, radius = (h, w), 0.01
         RENDER_MODE = 'color'
         w2c, k = (np.array((json_file['w2c'])[frame_index][cam_index]), np.array(json_file['k'][frame_index][cam_index]))
-        #w2c = np.linalg.inv(w2c)
+        w2c = np.linalg.inv(w2c)
         camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
         im, depth = render(w2c, k, scene_data[0], w, h, near, far)
           
-        first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
+        first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
         image = Image.fromarray((first_).astype(np.uint8))
         tto.append(image)
 
@@ -312,7 +312,7 @@ def visualize(seq, exp):
         image_size, radius = (h, w), 0.01
         RENDER_MODE = 'color'
         w2c, k = (np.array((json_file['w2c'])[0][cam_index]), np.array(json_file['k'][0][cam_index]))
-        #w2c = np.linalg.inv(w2c)
+        w2c = np.linalg.inv(w2c)
         camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
 
         im, depth = render(w2c, k, scene_data[0], w, h, near, far)
@@ -678,7 +678,7 @@ def visualize(seq, exp):
         image_size, radius = (h, w), 0.01
         RENDER_MODE = 'color'
         w2c, k = (np.array((json_file['w2c'])[frame_index][cam_index]), np.array(json_file['k'][frame_index][cam_index]))
-        #w2c = np.linalg.inv(w2c)
+        w2c = np.linalg.inv(w2c)
         camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
         im, depth = render(w2c, k, scene_data[0], w, h, near, far)
           
@@ -697,7 +697,7 @@ def visualize(seq, exp):
         image_size, radius = (h, w), 0.01
         RENDER_MODE = 'color'
         w2c, k = (np.array((json_file['w2c'])[0][cam_index]), np.array(json_file['k'][0][cam_index]))
-        #w2c = np.linalg.inv(w2c)
+        w2c = np.linalg.inv(w2c)
         camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
 
         im, depth = render(w2c, k, scene_data[0], w, h, near, far)
