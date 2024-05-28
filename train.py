@@ -21,14 +21,14 @@ def get_dataset(t, md, seq, mode='stat_only'):
         jpg_files = [int(file.split('.')[0]) for file in os.listdir(directory) if file.endswith('.jpg')]
         return jpg_files
 
-    # Specify the directory containing the .jpg files
-    directory = '/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/cmu_bike/mask_im'
+    # Specify the directory containing the .jpg files   precise_reduced_im
+    directory = '/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/cmu_bike/precise_reduced_im'
     jpg_filenames = get_jpg_filenames(directory)
     if mode=='ego_only':
       t=0
       jpg_filenames_2 = np.array(jpg_filenames)+1404
       jpg_filenames_3 = np.array(jpg_filenames_2)+1400
-      for lis in [jpg_filenames]: #, jpg_filenames_2, jpg_filenames_3
+      for lis in [jpg_filenames]: # , jpg_filenames_2, jpg_filenames_3
       
         for c in lis:
             h, w = md['hw'][c]
@@ -210,7 +210,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
         losses = 0 
         import random
         random.shuffle(stat_dataset)
-        split_index = len(stat_dataset) // 8
+        split_index = len(stat_dataset) #// 8
         stat_dataset = stat_dataset[:split_index]
         for i, data in enumerate(stat_dataset):
 
@@ -243,7 +243,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
                                 (1 - pearson_corrcoef(1 / (ground_truth_depth + 200.), depth_pred))
                 )
 
-        return losses/10
+        return losses/split_index#/7
     if stat_dataset:
         losses['stat_im']=held_stat_loss(stat_dataset)
 
@@ -286,7 +286,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
         losses['bg'] = l1_loss_v2(bg_pts, variables["init_bg_pts"]) + l1_loss_v2(bg_rot, variables["init_bg_rot"])
         losses['soft_col_cons'] = l1_loss_v2(params['rgb_colors'], variables["prev_col"])
 
-    loss_weights = {'im': 0.1, 'rigid': 4.0, 'rot': 4.0, 'iso': 2.0, 'floor': 2.0, 'bg': 20.0, 'stat_im':5.0,
+    loss_weights = {'im': 0.0001, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'stat_im':0.1,
                     'soft_col_cons': 0.01}
                     
     loss = sum([loss_weights[k] * v for k, v in losses.items()])
@@ -342,7 +342,7 @@ def initialize_post_first_timestep(params, variables, optimizer, num_knn=20):
 
 def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1000):
     if i % every_i == 0:
-        c=1404
+        c=1403
         t=0
         h, w = md['hw'][c]
         k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
@@ -400,6 +400,7 @@ def train(seq, exp):
     
     for t in range(7):
         dataset = get_dataset(t, md, seq, mode='ego_only')
+        print(len(dataset))
         stat_dataset = get_stat_dataset(t, md, seq, mode='stat_only')
 
 
@@ -412,7 +413,7 @@ def train(seq, exp):
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
 
-        num_iter_per_timestep = int(4.7e4) if is_initial_timestep else 2
+        num_iter_per_timestep = int(4.7e3) if is_initial_timestep else 2
         progress_bar = tqdm(range(num_iter_per_timestep), desc=f"timestep {t}")
         for i in range(num_iter_per_timestep):
             curr_data = get_batch(todo_dataset, dataset)
@@ -428,7 +429,7 @@ def train(seq, exp):
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
             for key, value in losses.items():
-              wandb.log({key: value, "iteration": i})
+              wandb.log({key: value.item(), "iteration": i})
             
         progress_bar.close()
         output_params.append(params2cpu(params, is_initial_timestep))
