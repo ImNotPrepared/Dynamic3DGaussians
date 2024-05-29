@@ -21,21 +21,22 @@ def get_dataset(t, md, seq, mode='stat_only'):
         jpg_files = [int(file.split('.')[0]) for file in os.listdir(directory) if file.endswith('.jpg')]
         return jpg_files
 
-    # Specify the directory containing the .jpg files   precise_reduced_im  precise_reduced_im
-    directory = '/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/cmu_bike/reduced_im'
+    # Specify the directory containing the .jpg files   precise_reduced_im
+                # /data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/nice100
+    directory = '/data3/zihanwa3/Capstone-DSR/Appendix/lalalal_new'#'/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/nice100'
     jpg_filenames = get_jpg_filenames(directory)
     if mode=='ego_only':
       t=0
       jpg_filenames_2 = np.array(jpg_filenames)+1404
       jpg_filenames_3 = np.array(jpg_filenames_2)+1400
       for lis in [jpg_filenames]: # , jpg_filenames_2, jpg_filenames_3
-      
-        for c in lis:
+        print(sorted(lis)[:30])
+        for c in sorted(lis)[:30]:
             h, w = md['hw'][c]
-            k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
+            k, w2c =  md['k'][t][c], (md['w2c'][t][c])
             cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
-            fn = md['fn'][t][c]
-            mask_path=f"/data3/zihanwa3/Capstone-DSR/Appendix/mask_{fn.split('/')[0]}/{fn.split('/')[-1]}"
+            fn = md['fn'][t][c] # mask_{fn.split('/')[0]}
+            mask_path=f"/data3/zihanwa3/Capstone-DSR/Appendix/lalalal_mask/{fn.split('/')[-1]}"
             mask = Image.open(mask_path).convert("L")
             transform = transforms.ToTensor()
             mask_tensor = transform(mask).squeeze(0)
@@ -53,9 +54,9 @@ def get_dataset(t, md, seq, mode='stat_only'):
                 im = torch.tensor(im).float().cuda().permute(2, 0, 1) / 255
                 mask_path=f'/scratch/zihanwa3/data_ego/cmu_bike/depth/{int(t)}/depth_{c}.npz'
                 depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda()
-                dataset.append({'cam': cam, 'im': im, 'id': c, 'gt_depth':depth, 'antimask': anti_mask_tensor})
+                dataset.append({'cam': cam, 'im': im, 'id': c, 'antimask': anti_mask_tensor})
       ## load stat
-      for c in range(1400, 1403):
+      for c in range(1400, 1404):
           h, w = md['hw'][c]
           k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
           cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
@@ -108,9 +109,7 @@ def get_stat_dataset(t, md, seq, mode='stat_only'):
           mask = Image.open(mask_path).convert("L")
           transform = transforms.ToTensor()
           mask_tensor = transform(mask).squeeze(0)
-          anti_mask_tensor = mask_tensor < 1e-5
-
-          #print(seg.shape)
+          anti_mask_tensor = mask_tensor > 1e-5
         
           ############################## First Frame Depth ##############################
           mask_path=f'/scratch/zihanwa3/data_ego/cmu_bike/depth/{int(c)-1399}/depth_1122.npz'
@@ -119,9 +118,9 @@ def get_stat_dataset(t, md, seq, mode='stat_only'):
 
           seg = torch.tensor(seg).float().cuda()
           seg_col = torch.stack((seg, torch.zeros_like(seg), 1 - seg))
-          dataset.append({'cam': cam, 'im': im, 'id': c, 'antimask': anti_mask_tensor, 'gt_depth':depth})  
-
+          dataset.append({'cam': cam, 'im': im, 'seg': seg_col, 'id': c, 'gt_depth':depth, 'mask':seg, 'antimask': anti_mask_tensor})
     return dataset
+
 def get_batch(todo_dataset, dataset):
     if not todo_dataset:
         todo_dataset = dataset.copy()
@@ -147,6 +146,7 @@ def initialize_params(seq, md):
         'cam_m': np.zeros((max_cams, 3)),
         'cam_c': np.zeros((max_cams, 3)),
     }
+    print(params['log_scales'].shape)
     params = {k: torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True)) for k, v in
               params.items()}
     cam_centers = np.linalg.inv(md['w2c'][0])[:, :3, 3]  # Get scene radius
@@ -160,15 +160,19 @@ def initialize_params(seq, md):
 
 def initialize_optimizer(params, variables):
     lrs = {
-        'means3D': 0.00000016 * variables['scene_radius'],
+        'means3D': 0.0000016 * variables['scene_radius'],
         'rgb_colors': 0.000025,
         'seg_colors': 0.0,
-        'unnorm_rotations': 0.001,
+        'unnorm_rotations': 0.000,
         'logit_opacities': 0.05,
         'log_scales': 0.001,
         'cam_m': 1e-4,
         'cam_c': 1e-4,
     }
+    '''
+            'logit_opacities': 0.05,
+        'log_scales': 0.001,
+    '''
     param_groups = [{'params': [v], 'name': k, 'lr': lrs[k]} for k, v in params.items()]
     return torch.optim.Adam(param_groups, lr=0.0, eps=1e-15)
 
@@ -237,6 +241,14 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
 
             if 'gt_depth' in data.keys():
                 ground_truth_depth = data['gt_depth']
+                depth_pred = depth_pred
+                depth_pred = depth_pred *  top_mask
+                ground_truth_depth = ground_truth_depth * top_mask
+                losses += 0.1 * l1_loss_v1(ground_truth_depth, depth_pred)
+
+
+                '''
+                ground_truth_depth = data['gt_depth']
                 depth_pred = depth_pred.squeeze(0)
                 depth_pred = depth_pred.reshape(-1, 1)
                 ground_truth_depth = ground_truth_depth.reshape(-1, 1)
@@ -244,6 +256,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
                                 (1 - pearson_corrcoef( - ground_truth_depth, depth_pred)),
                                 (1 - pearson_corrcoef(1 / (ground_truth_depth + 200.), depth_pred))
                 )
+                '''
 
         return losses/split_index#/7
     if stat_dataset:
@@ -288,7 +301,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
         losses['bg'] = l1_loss_v2(bg_pts, variables["init_bg_pts"]) + l1_loss_v2(bg_rot, variables["init_bg_rot"])
         losses['soft_col_cons'] = l1_loss_v2(params['rgb_colors'], variables["prev_col"])
 
-    loss_weights = {'im': 0.001, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'stat_im':0.1,
+    loss_weights = {'im': 0.0001, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'stat_im':0.1,
                     'soft_col_cons': 0.01}
                     
     loss = sum([loss_weights[k] * v for k, v in losses.items()])
@@ -342,18 +355,18 @@ def initialize_post_first_timestep(params, variables, optimizer, num_knn=20):
             param_group['lr'] = 0.0
     return variables
 
-def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1000):
+def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=100):
     if i % every_i == 0:
-        c=1403
+        c=77
         t=0
         h, w = md['hw'][c]
-        k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
+        k, w2c =  md['k'][t][c], (md['w2c'][t][c])
         cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
         im, _, _, = Renderer(raster_settings=cam)(**params2rendervar(params))
         im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
         im_wandb = im_wandb.astype(np.uint8)
         wandb.log({"held_out_image": wandb.Image(im_wandb, caption=f"Rendered image at iteration {i}")})
-        for c in range(1400,1403):
+        for c in range(1400,1404):
             h, w = md['hw'][c]
             k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
             cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
@@ -401,13 +414,13 @@ def train(seq, exp):
 
     
     for t in range(7):
-        stat_dataset = get_dataset(t, md, seq, mode='ego_only')
+        dataset = get_dataset(t, md, seq, mode='ego_only')
+        print(len(dataset))
+        stat_dataset = get_stat_dataset(t, md, seq, mode='stat_only')
 
-        dataset = get_stat_dataset(t, md, seq, mode='stat_only')
-        print(len(stat_dataset))
 
 
-        #stat_dataset=dataset
+        stat_dataset=dataset
 
 
         todo_dataset = []
@@ -415,7 +428,7 @@ def train(seq, exp):
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
 
-        num_iter_per_timestep = int(4.7e4) if is_initial_timestep else 2
+        num_iter_per_timestep = int(4.7e3) if is_initial_timestep else 2
         progress_bar = tqdm(range(num_iter_per_timestep), desc=f"timestep {t}")
         for i in range(num_iter_per_timestep):
             curr_data = get_batch(todo_dataset, dataset)

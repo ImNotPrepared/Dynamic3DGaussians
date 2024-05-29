@@ -39,6 +39,44 @@ import numpy as np
 import numpy as np
 
 import numpy as np
+C0 = 0.28209479177387814
+def rgb_to_spherical_harmonic(rgb):
+    return (rgb-0.5) / C0
+
+
+def spherical_harmonic_to_rgb(sh):
+    return sh*C0 + 0.5
+
+def save_ply_splat(path, means, scales, rotations, rgbs, opacities, normals=None):
+    if normals is None:
+        normals = np.zeros_like(means)
+
+
+    colors = rgb_to_spherical_harmonic(rgbs)
+
+    if scales.shape[1] == 1:
+        scales = np.tile(scales, (1, 3))
+
+    attrs = ['x', 'y', 'z',
+             'nx', 'ny', 'nz',
+             'f_dc_0', 'f_dc_1', 'f_dc_2',
+             'opacity',
+             'scale_0', 'scale_1', 'scale_2',
+             'rot_0', 'rot_1', 'rot_2', 'rot_3',]
+
+    dtype_full = [(attribute, 'f4') for attribute in attrs]
+    elements = np.empty(means.shape[0], dtype=dtype_full)
+    for lis in [means, normals, colors, opacities, scales, rotations]:
+      print(lis.shape)
+    attributes = np.concatenate((means, normals, colors, opacities, scales, rotations), axis=1)
+    elements[:] = list(map(tuple, attributes))
+    from plyfile import PlyData, PlyElement
+    el = PlyElement.describe(elements, 'vertex')
+    PlyData([el]).write(path)
+
+    print(f"Saved PLY format Splat to {path}")
+
+
 
 def render_wander_path(extrinsics, intrinsics):
     """
@@ -274,7 +312,22 @@ def visualize(seq, exp):
     os.makedirs(os.path.join(base_visuals_path, 'rot'), exist_ok=True)
     os.makedirs(base_output_path, exist_ok=True)
 
+    params_path = os.path.join('./output', exp,seq,  "params.npz")
+
+    params = dict(np.load(params_path, allow_pickle=True))
+
+
     scene_data, is_fg = load_scene_data(seq, exp)
+    scene_data=scene_data[0]
+    #print(scene_data.keys()) dict_keys(['means3D', 'colors_precomp', 'rotations', 'opacities', 'scales', 'means2D'])
+    path = base_output_path+'points.ply'
+    #params=scene_data
+    means = params['means3D']
+    scales = params['log_scales']
+    rotations = params['unnorm_rotations']
+    rgbs = params['rgb_colors']
+    opacities = params['logit_opacities']
+    save_ply_splat(path, means[0], scales, rotations[0], rgbs[0], opacities)
     file_path = os.path.join(base_data_path, seq, 'train_meta.json') 
 
     with open(file_path, 'r') as file:
@@ -293,15 +346,15 @@ def visualize(seq, exp):
         image_size, radius = (h, w), 0.01
         RENDER_MODE = 'color'
         w2c, k = (np.array((json_file['w2c'])[frame_index][cam_index]), np.array(json_file['k'][frame_index][cam_index]))
-        w2c = np.linalg.inv(w2c)
+        #w2c = np.linalg.inv(w2c)
         camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
-        im, depth = render(w2c, k, scene_data[0], w, h, near, far)
+        im, depth = render(w2c, k, scene_data, w, h, near, far)
           
         first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
         image = Image.fromarray((first_).astype(np.uint8))
         tto.append(image)
 
-    imageio.mimsave(os.path.join(base_visuals_path, 'sys', 'ego.gif'), tto, fps=6)
+    imageio.mimsave(os.path.join(base_visuals_path, 'sys', 'ego.gif'), tto, fps=27)
 
     interval = 27
     for cam_index in range(1400, 1404):
@@ -315,7 +368,7 @@ def visualize(seq, exp):
         w2c = np.linalg.inv(w2c)
         camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
 
-        im, depth = render(w2c, k, scene_data[0], w, h, near, far)
+        im, depth = render(w2c, k, scene_data, w, h, near, far)
           
         first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
         cv2.imwrite(os.path.join(base_visuals_path, 'sys', f'cam_{cam_index}.png'), first_)
@@ -333,7 +386,7 @@ def visualize(seq, exp):
         tto = []
         for i, pose in enumerate(poses):
             camera = PerspectiveCameras(device="cuda", R=pose[None, ...], K=k[None, ...])
-            im, _ = render(pose, k, scene_data[0], w, h, near, far)
+            im, _ = render(pose, k, scene_data, w, h, near, far)
             im = np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
             image = Image.fromarray((im).astype(np.uint8))
             tto.append(image)
@@ -353,7 +406,7 @@ def visualize(seq, exp):
         ], device="cuda").unsqueeze(0)
 
         camera_rotation = rotation_matrix.cpu() @ w2c[None, ...]
-        im, depth = render(camera_rotation[0], k, scene_data[0], w, h, near, far)
+        im, depth = render(camera_rotation[0], k, scene_data, w, h, near, far)
         first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
         im = np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
         image = Image.fromarray((im).astype(np.uint8))
@@ -368,8 +421,8 @@ def visualize(seq, exp):
     point_cloud = Pointclouds(points=[points], features=[rgb]).to('cuda')
     render_360_pc(point_cloud, image_size=(144, 256), output_path=os.path.join(base_output_path, 'point_cloud.gif'), device='cuda')
 
-    from plyfile import PlyData, PlyElement
-    storePly(os.path.join(base_output_path, "final_pt_cld.ply"), points, rgb)
+    #from plyfile import PlyData, PlyElement
+    #storePly(os.path.join(base_output_path, "final_pt_cld.ply"), points, rgb)
     data = np.zeros((len(points), 7))
     data[:, :3], data[:, 3:6] = points, rgb
     data[:, 6] = np.ones((len(points)))
