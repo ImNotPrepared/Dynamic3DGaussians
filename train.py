@@ -22,18 +22,18 @@ def get_dataset(t, md, seq, mode='stat_only'):
         return jpg_files
 
     # Specify the directory containing the .jpg files   precise_reduced_im
-                # /data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/nice100
-    directory = '/data3/zihanwa3/Capstone-DSR/Appendix/lalalal_new'#'/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/nice100'
+                # /data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/nice100 '/data3/zihanwa3/Capstone-DSR/Appendix/lalalal_new'#
+    directory = '/data3/zihanwa3/Capstone-DSR/Appendix/lalalal_new_larger'
     jpg_filenames = get_jpg_filenames(directory)
     if mode=='ego_only':
       t=0
       jpg_filenames_2 = np.array(jpg_filenames)+1404
       jpg_filenames_3 = np.array(jpg_filenames_2)+1400
       for lis in [jpg_filenames]: # , jpg_filenames_2, jpg_filenames_3
-        print(sorted(lis)[:30])
-        for c in sorted(lis)[:30]:
+        #print(sorted(lis)[:30])
+        for c in sorted(lis):
             h, w = md['hw'][c]
-            k, w2c =  md['k'][t][c], (md['w2c'][t][c])
+            k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
             cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
             fn = md['fn'][t][c] # mask_{fn.split('/')[0]}
             mask_path=f"/data3/zihanwa3/Capstone-DSR/Appendix/lalalal_mask/{fn.split('/')[-1]}"
@@ -166,8 +166,8 @@ def initialize_optimizer(params, variables):
         'unnorm_rotations': 0.000,
         'logit_opacities': 0.05,
         'log_scales': 0.001,
-        'cam_m': 1e-4,
-        'cam_c': 1e-4,
+        'cam_m': 1e-5,
+        'cam_c': 1e-5,
     }
     '''
             'logit_opacities': 0.05,
@@ -244,7 +244,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
                 depth_pred = depth_pred
                 depth_pred = depth_pred *  top_mask
                 ground_truth_depth = ground_truth_depth * top_mask
-                losses += 0.1 * l1_loss_v1(ground_truth_depth, depth_pred)
+                losses += 1 * l1_loss_v1(ground_truth_depth, depth_pred)
 
 
                 '''
@@ -360,7 +360,7 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=100)
         c=77
         t=0
         h, w = md['hw'][c]
-        k, w2c =  md['k'][t][c], (md['w2c'][t][c])
+        k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
         cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
         im, _, _, = Renderer(raster_settings=cam)(**params2rendervar(params))
         im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
@@ -428,7 +428,7 @@ def train(seq, exp):
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
 
-        num_iter_per_timestep = int(4.7e3) if is_initial_timestep else 2
+        num_iter_per_timestep = int(7.7e3) if is_initial_timestep else 2
         progress_bar = tqdm(range(num_iter_per_timestep), desc=f"timestep {t}")
         for i in range(num_iter_per_timestep):
             curr_data = get_batch(todo_dataset, dataset)

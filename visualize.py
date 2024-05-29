@@ -308,6 +308,7 @@ def visualize(seq, exp):
 
     # Ensure directories exist
     os.makedirs(base_visuals_path, exist_ok=True)
+    os.makedirs(os.path.join(base_visuals_path, 'ego'), exist_ok=True)
     os.makedirs(os.path.join(base_visuals_path, 'sys'), exist_ok=True)
     os.makedirs(os.path.join(base_visuals_path, 'rot'), exist_ok=True)
     os.makedirs(base_output_path, exist_ok=True)
@@ -342,14 +343,16 @@ def visualize(seq, exp):
         h, w = json_file['hw'][cam_index]
         def_pix = torch.tensor(
             np.stack(np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5, 1), -1).reshape(-1, 3)).cuda().float()
-        pix_ones = torch.ones(h * w, 1).cuda().float()
+        pix_ones = torch.ones(h * w, 1).cuda().float() 
         image_size, radius = (h, w), 0.01
         RENDER_MODE = 'color'
         w2c, k = (np.array((json_file['w2c'])[frame_index][cam_index]), np.array(json_file['k'][frame_index][cam_index]))
         #w2c = np.linalg.inv(w2c)
         camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
         im, depth = render(w2c, k, scene_data, w, h, near, far)
-          
+        first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
+        cv2.imwrite(os.path.join(base_visuals_path, 'ego', f'cam_{cam_index}.png'), first_)  
+
         first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
         image = Image.fromarray((first_).astype(np.uint8))
         tto.append(image)
