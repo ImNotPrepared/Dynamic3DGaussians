@@ -395,28 +395,28 @@ def visualize(seq, exp):
             tto.append(image)
         imageio.mimsave(os.path.join(base_visuals_path, 'sys', f'{cam_index-1399}_aaa.gif'), tto, fps=10)
       
-    num_frames = 20
-    angles = torch.linspace(0, 2 * np.pi, num_frames)
+        num_frames = 20
+        angles = torch.linspace(0, 2 * np.pi, num_frames)
 
-    images = []
-    for i, angle in enumerate(angles):
-        cos_a, sin_a = torch.cos(angle), torch.sin(angle)
-        rotation_matrix = torch.tensor([
-            [cos_a, 0, sin_a, 0],
-            [0, 1, 0, 0],
-            [-sin_a, 0, cos_a, 0],
-            [0, 0, 0, 1]
-        ], device="cuda").unsqueeze(0)
+        images = []
+        for i, angle in enumerate(angles):
+            cos_a, sin_a = torch.cos(angle), torch.sin(angle)
+            rotation_matrix = torch.tensor([
+                [cos_a, 0, sin_a, 0],
+                [0, 1, 0, 0],
+                [-sin_a, 0, cos_a, 0],
+                [0, 0, 0, 1]
+            ], device="cuda").unsqueeze(0)
 
-        camera_rotation = rotation_matrix.cpu() @ w2c[None, ...]
-        im, depth = render(camera_rotation[0], k, scene_data, w, h, near, far)
-        first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
-        im = np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
-        image = Image.fromarray((im).astype(np.uint8))
+            camera_rotation = rotation_matrix.cpu() @ w2c[None, ...]
+            im, depth = render(camera_rotation[0], k, scene_data, w, h, near, far)
+            first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
+            im = np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
+            image = Image.fromarray((im).astype(np.uint8))
 
-        cv2.imwrite(os.path.join(base_visuals_path, 'rot', f'cam_{angle}.png'), first_)
-        images.append(np.array(image))
-    imageio.mimsave(os.path.join(base_visuals_path, 'rot', 'cam.gif'), images, fps=5)
+            cv2.imwrite(os.path.join(base_visuals_path, 'rot', f'cam_{angle}.png'), first_)
+            images.append(np.array(image))
+        imageio.mimsave(os.path.join(base_visuals_path, 'rot', f'cam_{cam_index}.gif'), images, fps=5)
 
     points = torch.cat(points_list, dim=0)
     rgb = torch.cat(rbgs_list, dim=0)

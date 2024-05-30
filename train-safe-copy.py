@@ -14,6 +14,30 @@ import cv2
 from torchmetrics.functional.regression import pearson_corrcoef
 import torchvision.transforms as transforms
 
+def save_masked_image(image_tensor, mask_tensor, save_path):
+    """
+    Save the masked image to a file.
+    
+    :param image_tensor: Tensor of the image (shape: [C, H, W])
+    :param mask_tensor: Tensor of the mask (shape: [H, W])
+    :param save_path: Path where the image will be saved
+    """
+    # Convert the image tensor to a PIL Image
+    image = image_tensor.cpu().permute(1, 2, 0).numpy() * 255
+    image = image.astype(np.uint8)
+    image = Image.fromarray(image)
+    
+    # Convert the mask tensor to a PIL Image
+    mask = mask_tensor.cpu().numpy() * 255
+    mask = mask.astype(np.uint8)
+    mask = Image.fromarray(mask, mode='L')
+    
+    # Apply the mask to the image
+    image.putalpha(mask)
+    
+    # Save the image
+    image.save(save_path)
+
 def get_dataset(t, md, seq, mode='stat_only'):
     dataset = []
     t += 1111
@@ -55,6 +79,12 @@ def get_dataset(t, md, seq, mode='stat_only'):
                 mask_path=f'/scratch/zihanwa3/data_ego/cmu_bike/depth/{int(t)}/depth_{c}.npz'
                 depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda()
                 dataset.append({'cam': cam, 'im': im, 'id': c, 'antimask': anti_mask_tensor})
+
+            # Save the masked image
+            save_path = f"./masked_images/{c}_masked.png"
+            save_masked_image(im, anti_mask_tensor, save_path)
+            print(f"Saved masked image to {save_path}")
+
       ## load stat
       for c in range(1400, 1404):
           h, w = md['hw'][c]
@@ -82,10 +112,14 @@ def get_dataset(t, md, seq, mode='stat_only'):
 
           seg = torch.tensor(seg).float().cuda()
           seg_col = torch.stack((seg, torch.zeros_like(seg), 1 - seg))
-          dataset.append({'cam': cam, 'im': im, 'id': c, 'antimask': anti_mask_tensor, 'gt_depth':depth})  
+          dataset.append({'cam': cam, 'im': im, 'id': c, 'antimask': anti_mask_tensor, 'gt_depth':depth})
+
+          # Save the masked image
+          save_path = f"./masked_images/{c}_masked.png"
+          save_masked_image(im, anti_mask_tensor, save_path)
+          print(f"Saved masked image to {save_path}")
 
     return dataset
-
 
 def train(seq, exp):
     #if os.path.exists(f"./output/{exp}/{seq}"):
@@ -93,17 +127,13 @@ def train(seq, exp):
     #    return
     md = json.load(open(f"./data_ego/{seq}/train_meta.json", 'r'))  # metadata
     num_timesteps = len(md['fn'])
-    params, variables = initialize_params(seq, md)
-    optimizer = initialize_optimizer(params, variables)
-
+    t=0
+    get_dataset(t, md, seq, mode='ego_only')
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Run training and visualization for a sequence.")
-    parser.add_argument('--exp_name', type=str, required=True, help='Name of the experiment')
-    args = parser.parse_args()
 
-    exp_name = args.exp_name
+    exp_name = 'test'
     #for sequence in ["basketball", "boxes", "football", "juggle", "softball", "tennis"]:
     for sequence in ["cmu_bike"]:
         train(sequence, exp_name)

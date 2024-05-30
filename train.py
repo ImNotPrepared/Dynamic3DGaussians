@@ -23,7 +23,7 @@ def get_dataset(t, md, seq, mode='stat_only'):
 
     # Specify the directory containing the .jpg files   precise_reduced_im
                 # /data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/nice100 '/data3/zihanwa3/Capstone-DSR/Appendix/lalalal_new'#
-    directory = '/data3/zihanwa3/Capstone-DSR/Appendix/lalalal_new_larger'
+    directory = '/data3/zihanwa3/Capstone-DSR/Appendix/nice10'
     jpg_filenames = get_jpg_filenames(directory)
     if mode=='ego_only':
       t=0
@@ -76,13 +76,14 @@ def get_dataset(t, md, seq, mode='stat_only'):
           #print(seg.shape)
         
           ############################## First Frame Depth ##############################
-          mask_path=f'/scratch/zihanwa3/data_ego/cmu_bike/depth/{int(c)-1399}/depth_1122.npz'
+          #  f'/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/cmu_bike/depth/{int(cam_id)}/depth_0.npz'
+          mask_path=f'/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/cmu_bike/depth/{int(c)-1399}/depth_0.npz'
           depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda()
           #np.savez_compressed(, depth_map=new_depth)
 
           seg = torch.tensor(seg).float().cuda()
           seg_col = torch.stack((seg, torch.zeros_like(seg), 1 - seg))
-          dataset.append({'cam': cam, 'im': im, 'id': c, 'antimask': anti_mask_tensor, 'gt_depth':depth})  
+          dataset.append({'cam': cam, 'im': im, 'id': c, 'gt_depth':depth})  
 
     return dataset
 
@@ -357,15 +358,23 @@ def initialize_post_first_timestep(params, variables, optimizer, num_knn=20):
 
 def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=100):
     if i % every_i == 0:
-        c=77
-        t=0
-        h, w = md['hw'][c]
-        k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
-        cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
-        im, _, _, = Renderer(raster_settings=cam)(**params2rendervar(params))
-        im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
-        im_wandb = im_wandb.astype(np.uint8)
-        wandb.log({"held_out_image": wandb.Image(im_wandb, caption=f"Rendered image at iteration {i}")})
+        def get_jpg_filenames(directory):
+            jpg_files = [int(file.split('.')[0]) for file in os.listdir(directory) if file.endswith('.jpg')]
+            return jpg_files
+
+        # Specify the directory containing the .jpg files   precise_reduced_im
+                    # /data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/nice100 '/data3/zihanwa3/Capstone-DSR/Appendix/lalalal_new'#
+        directory = '/data3/zihanwa3/Capstone-DSR/Appendix/nice10'
+        jpg_filenames = get_jpg_filenames(directory)
+        for item, c in enumerate(jpg_filenames):
+            t=0
+            h, w = md['hw'][c]
+            k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
+            cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
+            im, _, _, = Renderer(raster_settings=cam)(**params2rendervar(params))
+            im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
+            im_wandb = im_wandb.astype(np.uint8)
+            wandb.log({f"held_out_image_{item}": wandb.Image(im_wandb, caption=f"Rendered image at iteration {i}")})
         for c in range(1400,1404):
             h, w = md['hw'][c]
             k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
@@ -373,7 +382,7 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=100)
             im, _, _, = Renderer(raster_settings=cam)(**params2rendervar(params))
             im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
             im_wandb = im_wandb.astype(np.uint8)
-            wandb.log({f"image_{c-1400}": wandb.Image(im_wandb, caption=f"Rendered image at iteration {i}")})
+            wandb.log({f"stat_image_{c-1399}": wandb.Image(im_wandb, caption=f"Rendered image at iteration {i}")})
 
 def report_progress(params, data, i, progress_bar, every_i=100):
     if i % every_i == 0:
