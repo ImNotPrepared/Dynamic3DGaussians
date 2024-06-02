@@ -340,14 +340,14 @@ def visualize(seq, exp):
     tto = []
 
     for cam_index in range(1400):
-        h, w = json_file['hw'][cam_index]
+        h, w = 256, 256
         def_pix = torch.tensor(
             np.stack(np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5, 1), -1).reshape(-1, 3)).cuda().float()
         pix_ones = torch.ones(h * w, 1).cuda().float() 
         image_size, radius = (h, w), 0.01
         RENDER_MODE = 'color'
         w2c, k = (np.array((json_file['w2c'])[frame_index][cam_index]), np.array(json_file['k'][frame_index][cam_index]))
-        #w2c = np.linalg.inv(w2c)
+        w2c = np.linalg.inv(w2c)
         camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
         im, depth = render(w2c, k, scene_data, w, h, near, far)
         first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
