@@ -340,7 +340,7 @@ def visualize(seq, exp):
     tto = []
 
     for cam_index in range(1400):
-        h, w = 256, 256
+        h, w = json_file['hw'][cam_index]
         def_pix = torch.tensor(
             np.stack(np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5, 1), -1).reshape(-1, 3)).cuda().float()
         pix_ones = torch.ones(h * w, 1).cuda().float() 
@@ -350,14 +350,17 @@ def visualize(seq, exp):
         w2c = np.linalg.inv(w2c)
         camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
         im, depth = render(w2c, k, scene_data, w, h, near, far)
+        im = torch.rot90(im, k=-1, dims=(1, 2))
         first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
-        cv2.imwrite(os.path.join(base_visuals_path, 'ego', f'cam_{cam_index}.png'), first_)  
+        #cv2.imwrite(os.path.join(base_visuals_path, 'ego', f'cam_{cam_index}.png'), first_)  
 
         first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
+        first_ = cv2.resize(first_.astype(np.uint8), (256, 256), interpolation=cv2.INTER_LINEAR)
+
         image = Image.fromarray((first_).astype(np.uint8))
         tto.append(image)
 
-    imageio.mimsave(os.path.join(base_visuals_path, 'sys', 'ego.gif'), tto, fps=27)
+    imageio.mimsave(os.path.join(base_visuals_path, 'sys', 'ego.gif'), tto, fps=21)
 
     interval = 27
     for cam_index in range(1400, 1404):
@@ -455,7 +458,7 @@ def storePly(path, xyz, rgb):
 if __name__ == "__main__":
     import os
     import sys
-    sequence = sys.argv[1]
-    exp_name = sys.argv[2]
+    sequence = 'cmu_bike'
+    exp_name = sys.argv[1]
     
     visualize(sequence, exp_name)

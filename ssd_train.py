@@ -22,8 +22,8 @@ def get_dataset(t, md, seq, mode='stat_only'):
         return jpg_files
 
     # Specify the directory containing the .jpg files   precise_reduced_im
-                # /scratch/zihanwa3/data_ego/nice100 '/data3/zihanwa3/Capstone-DSR/Appendix/lalalal_new'# /data3/zihanwa3/Capstone-DSR/Appendix/nice10
-    directory = '/data3/zihanwa3/Capstone-DSR/Appendix/SR300'
+                # /ssd0/zihanwa3/data_ego/nice100 '/data3/zihanwa3/Capstone-DSR/Appendix/lalalal_new'# /data3/zihanwa3/Capstone-DSR/Appendix/nice10
+    directory = '/data3/zihanwa3/Capstone-DSR/Appendix/SR100'
     jpg_filenames = get_jpg_filenames(directory)
     if mode=='ego_only':
       t=0
@@ -36,13 +36,13 @@ def get_dataset(t, md, seq, mode='stat_only'):
             k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
             cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
             fn = md['fn'][t][c] # mask_{fn.split('/')[0]}
-            mask_path=f"/scratch/zihanwa3/data_ego/lalalal_newmask/{fn.split('/')[-1]}"
+            mask_path=f"/ssd0/zihanwa3/data_ego/lalalal_newmask/{fn.split('/')[-1]}"
             mask = Image.open(mask_path).convert("L")
             transform = transforms.ToTensor()
             mask_tensor = transform(mask).squeeze(0)
             anti_mask_tensor = mask_tensor > 1e-5
             if h==192:
-                image_path = f"/scratch/zihanwa3/data_ego/{seq}/ims/{fn}"
+                image_path = f"/ssd0/zihanwa3/data_ego/{seq}/ims/{fn}"
                 image = Image.open(image_path)
                 gray_image = image.convert('L')
                 im = np.array(copy.deepcopy(gray_image))
@@ -50,9 +50,9 @@ def get_dataset(t, md, seq, mode='stat_only'):
                 im = im.unsqueeze(0).repeat(3, 1, 1)
                 dataset.append({'cam': cam, 'im': im, 'id': c, 'antimask': anti_mask_tensor})
             else:
-                im = np.array(copy.deepcopy(Image.open(f"/scratch/zihanwa3/data_ego/{seq}/ims/{fn}")))
+                im = np.array(copy.deepcopy(Image.open(f"/ssd0/zihanwa3/data_ego/{seq}/ims/{fn}")))
                 im = torch.tensor(im).float().cuda().permute(2, 0, 1) / 255
-                mask_path=f'/scratch/zihanwa3/data_ego/cmu_bike/depth/{int(t)}/depth_{c}.npz'
+                mask_path=f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(t)}/depth_{c}.npz'
                 depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda()
                 dataset.append({'cam': cam, 'im': im, 'id': c, 'antimask': anti_mask_tensor})
       ## load stat
@@ -63,12 +63,12 @@ def get_dataset(t, md, seq, mode='stat_only'):
           cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
 
           fn = md['fn'][t][c]
-          im = np.array(copy.deepcopy(Image.open(f"/scratch/zihanwa3/data_ego/{seq}/ims/{fn}")))
+          im = np.array(copy.deepcopy(Image.open(f"/ssd0/zihanwa3/data_ego/{seq}/ims/{fn}")))
           im = torch.tensor(im).float().cuda().permute(2, 0, 1) / 255
           #print(im.shape)
           ############################## First Frame Depth ##############################
-          #  f'/scratch/zihanwa3/data_ego/cmu_bike/depth/{int(cam_id)}/depth_0.npz'
-          mask_path=f'/scratch/zihanwa3/data_ego/cmu_bike/depth/{int(c)-1399}/depth_0.npz'
+          #  f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(cam_id)}/depth_0.npz'
+          mask_path=f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(c)-1399}/depth_0.npz'
           depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda()
           #np.savez_compressed(, depth_map=new_depth)
           dataset.append({'cam': cam, 'im': im, 'id': c, 'gt_depth':depth})  
@@ -116,14 +116,14 @@ def initialize_params(seq, md):
 
 def initialize_optimizer(params, variables):
     lrs = {
-        'means3D': 0.0000016 * variables['scene_radius'],
-        'rgb_colors': 0.000025,
+        'means3D': 0.0000014 * variables['scene_radius'],
+        'rgb_colors': 0.00028,
         'seg_colors': 0.0,
         'unnorm_rotations': 0.000,
-        'logit_opacities': 0.05,
-        'log_scales': 0.001,
-        'cam_m': 1e-5,
-        'cam_c': 1e-5,
+        'logit_opacities': 0.07,
+        'log_scales': 0.0007,
+        'cam_m': 7e-5,
+        'cam_c': 7e-5,
     }
     '''
             'logit_opacities': 0.05,
@@ -164,7 +164,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
 
     if 'antimask' in curr_data.keys():
         mask_path='/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/masked_cmu_bike/triangular_mask.jpg'
-        default_mask= torch.tensor(cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE), device=im.device)  
+        default_mask= torch.tensor(cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE), device=im.device)
         default_mask = default_mask>1e-5
 
         antimask=curr_data['antimask'].to(params['cam_c'][curr_id].device)
@@ -217,14 +217,16 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
             masked_curr_data_im = data['im'] * top_mask
 
             losses += 0.8 * l1_loss_v1(masked_im, masked_curr_data_im) + 0.2 * (1.0 - calc_ssim(masked_im, masked_curr_data_im))
+
+
+            '''
             if 'gt_depth' in data.keys():
                 ground_truth_depth = data['gt_depth']
                 depth_pred = depth_pred
                 depth_pred = depth_pred *  top_mask
                 ground_truth_depth = ground_truth_depth * top_mask
                 losses += 0.01 * l1_loss_v1(ground_truth_depth, depth_pred)
-
-            '''
+                
                 ground_truth_depth = data['gt_depth']
                 depth_pred = depth_pred.squeeze(0)
                 depth_pred = depth_pred.reshape(-1, 1)
@@ -339,7 +341,7 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=700)
             return jpg_files
 
         # Specify the directory containing the .jpg files   precise_reduced_im
-                    # /scratch/zihanwa3/data_ego/nice100 '/data3/zihanwa3/Capstone-DSR/Appendix/lalalal_new'#
+                    # /ssd0/zihanwa3/data_ego/nice100 '/data3/zihanwa3/Capstone-DSR/Appendix/lalalal_new'#
         directory = '/data3/zihanwa3/Capstone-DSR/Appendix/SR10'
         jpg_filenames = get_jpg_filenames(directory)
         for item, c in enumerate(jpg_filenames):
@@ -351,7 +353,10 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=700)
             im = torch.rot90(im, k=-1, dims=(1, 2))
             im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
             im_wandb = im_wandb.astype(np.uint8)
+            new_width, new_height = 256, 256  # desired dimensions
+            im_wandb = cv2.resize(im_wandb, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
             wandb.log({f"held_out_image_{item}": wandb.Image(im_wandb, caption=f"Rendered image at iteration {i}")})
+
         for c in range(1400,1404):
             h, w = md['hw'][c]
             k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
@@ -359,6 +364,8 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=700)
             im, _, _, = Renderer(raster_settings=cam)(**params2rendervar(params))
             im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
             im_wandb = im_wandb.astype(np.uint8)
+            new_width, new_height = 256, 144  # desired dimensions
+            im_wandb = cv2.resize(im_wandb, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
             wandb.log({f"stat_image_{c-1399}": wandb.Image(im_wandb, caption=f"Rendered image at iteration {i}")})
 
 def report_progress(params, data, i, progress_bar, every_i=100):
@@ -413,7 +420,7 @@ def train(seq, exp):
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
 
-        num_iter_per_timestep = int(9.1e4) if is_initial_timestep else 2
+        num_iter_per_timestep = int(7.7e4) if is_initial_timestep else 2
         progress_bar = tqdm(range(num_iter_per_timestep), desc=f"timestep {t}")
         for i in range(num_iter_per_timestep):
             curr_data = get_batch(todo_dataset, dataset)
