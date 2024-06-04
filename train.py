@@ -56,6 +56,8 @@ def get_dataset(t, md, seq, mode='stat_only'):
                 depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda()
                 dataset.append({'cam': cam, 'im': im, 'id': c, 'antimask': anti_mask_tensor})
       ## load stat
+    if mode=='stat_only':
+      t=0
       for c in range(1400, 1404):
           h, w = md['hw'][c]
 
@@ -183,9 +185,10 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
     #cv2.imwrite('./sanity.png', first_)
     def held_stat_loss(stat_dataset):
         losses = 0 
+        depth_losses=0
         import random
         random.shuffle(stat_dataset)
-        split_index = len(stat_dataset) // 4
+        split_index = len(stat_dataset) #// 4
         stat_dataset = stat_dataset[:split_index]
         for i, data in enumerate(stat_dataset):
             im, radius, depth_pred, = Renderer(raster_settings=data['cam'])(**rendervar)
@@ -222,7 +225,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
                 depth_pred = depth_pred
                 depth_pred = depth_pred *  top_mask
                 ground_truth_depth = ground_truth_depth * top_mask
-                losses += 0.01 * l1_loss_v1(ground_truth_depth, depth_pred)
+                depth_losses += 0.01 * l1_loss_v1(ground_truth_depth, depth_pred)
 
             '''
                 ground_truth_depth = data['gt_depth']
@@ -235,9 +238,9 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
                 )
                 '''
 
-        return losses/split_index#/7
+        return losses/split_index, depth_losses/split_index#/7
     if stat_dataset:
-        losses['stat_im']=held_stat_loss(stat_dataset)
+        losses['stat_im'], losses['depth'] =held_stat_loss(stat_dataset)
 
     variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
 
@@ -278,7 +281,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
         losses['bg'] = l1_loss_v2(bg_pts, variables["init_bg_pts"]) + l1_loss_v2(bg_rot, variables["init_bg_rot"])
         losses['soft_col_cons'] = l1_loss_v2(params['rgb_colors'], variables["prev_col"])
 
-    loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 
+    loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'stat_im':0.01, 'depth': 0.01
                     'soft_col_cons': 0.01}
                     
     loss = sum([loss_weights[k] * v for k, v in losses.items()])
@@ -401,8 +404,8 @@ def train(seq, exp):
     
     for t in range(7):
         dataset = get_dataset(t, md, seq, mode='ego_only')
-        print(len(dataset))
-        stat_dataset = None
+        stat_dataset = get_dataset(t, md, seq, mode='stat_only')
+        #stat_dataset = None
 
 
         #dataset
