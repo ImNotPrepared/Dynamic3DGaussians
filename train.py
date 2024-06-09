@@ -53,8 +53,8 @@ def get_dataset(t, md, seq, mode='stat_only'):
                 im = np.array(copy.deepcopy(Image.open(f"/scratch/zihanwa3/data_ego/{seq}/ims/{fn}")))
                 im = torch.tensor(im).float().cuda().permute(2, 0, 1) / 255
                 mask_path=f'/scratch/zihanwa3/data_ego/cmu_bike/depth/{int(t)}/depth_{c}.npz'
-                depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda()
-                dataset.append({'cam': cam, 'im': im, 'id': c, 'antimask': anti_mask_tensor})
+                depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda() / 255
+                dataset.append({'cam': cam, 'im': im, 'id': c, 'antimask': anti_mask_tensor,'gt_depth':depth})  
       ## load stat
     if mode=='stat_only':
       t=0
@@ -71,7 +71,7 @@ def get_dataset(t, md, seq, mode='stat_only'):
           ############################## First Frame Depth ##############################
           #  f'/scratch/zihanwa3/data_ego/cmu_bike/depth/{int(cam_id)}/depth_0.npz'
           mask_path=f'/scratch/zihanwa3/data_ego/cmu_bike/depth/{int(c)-1399}/depth_0.npz'
-          depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda()
+          depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda() / 255 
           #np.savez_compressed(, depth_map=new_depth)
           dataset.append({'cam': cam, 'im': im, 'id': c, 'gt_depth':depth})  
 
@@ -281,7 +281,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
         losses['bg'] = l1_loss_v2(bg_pts, variables["init_bg_pts"]) + l1_loss_v2(bg_rot, variables["init_bg_rot"])
         losses['soft_col_cons'] = l1_loss_v2(params['rgb_colors'], variables["prev_col"])
 
-    loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'stat_im':0.01, 'depth': 0.01
+    loss_weights = {'im': 0.0, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'stat_im':0.01, 'depth': 1
                     'soft_col_cons': 0.01}
                     
     loss = sum([loss_weights[k] * v for k, v in losses.items()])

@@ -321,7 +321,7 @@ def visualize(seq, exp):
     scene_data, is_fg = load_scene_data(seq, exp)
     scene_data=scene_data[0]
     #print(scene_data.keys()) dict_keys(['means3D', 'colors_precomp', 'rotations', 'opacities', 'scales', 'means2D'])
-    path = base_output_path+'points.ply'
+    path = base_visuals_path+'points.ply'
     #params=scene_data
     means = params['means3D']
     scales = params['log_scales']
@@ -349,7 +349,9 @@ def visualize(seq, exp):
         w2c, k = (np.array((json_file['w2c'])[frame_index][cam_index]), np.array(json_file['k'][frame_index][cam_index]))
         w2c = np.linalg.inv(w2c)
         camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
+        
         im, depth = render(w2c, k, scene_data, w, h, near, far)
+        im=im.clip(0,1)
         im = torch.rot90(im, k=-1, dims=(1, 2))
         first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
         #cv2.imwrite(os.path.join(base_visuals_path, 'ego', f'cam_{cam_index}.png'), first_)  
@@ -375,18 +377,22 @@ def visualize(seq, exp):
         camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
 
         im, depth = render(w2c, k, scene_data, w, h, near, far)
-          
-        first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
+        im=im.clip(0,1)
+        new_width, new_height = 256, 144  # desired dimensions
+        im=im.detach().cpu().permute(1, 2, 0).numpy()
+        im = cv2.resize(im, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+
+        first_ = np.array(im[:, :, ::-1]) * 255
         cv2.imwrite(os.path.join(base_visuals_path, 'sys', f'cam_{cam_index}.png'), first_)
         
         first_ = np.array(depth.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
         cv2.imwrite(os.path.join(base_visuals_path, 'sys', f'depth_{cam_index}.png'), first_)
 
-        pointclouds, pts, cols = rgbd2pcd(im, depth, w2c, k, def_pix, pix_ones, show_depth=(RENDER_MODE == 'depth'))
-        point_cloud = Pointclouds(points=[pts], features=[cols]).to('cuda')
-        render_360_pc(point_cloud, image_size=(144, 256), output_path=os.path.join(base_output_path, 'point_cloud.gif'), device='cuda')
-        points_list.append(pts)
-        rbgs_list.append(cols)
+        #pointclouds, pts, cols = rgbd2pcd(im, depth, w2c, k, def_pix, pix_ones, show_depth=(RENDER_MODE == 'depth'))
+        #point_cloud = Pointclouds(points=[pts], features=[cols]).to('cuda')
+        #render_360_pc(point_cloud, image_size=(144, 256), output_path=os.path.join(base_output_path, 'point_cloud.gif'), device='cuda')
+        #points_list.append(pts)
+        #rbgs_list.append(cols)
         poses = render_wander_path(w2c, k)
 
         tto = []
@@ -413,28 +419,31 @@ def visualize(seq, exp):
 
             camera_rotation = rotation_matrix.cpu() @ w2c[None, ...]
             im, depth = render(camera_rotation[0], k, scene_data, w, h, near, far)
+
             first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
             im = np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
+            new_width, new_height = 256, 144  # desired dimensions
+            im = cv2.resize(im, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
             image = Image.fromarray((im).astype(np.uint8))
 
             cv2.imwrite(os.path.join(base_visuals_path, 'rot', f'cam_{angle}.png'), first_)
             images.append(np.array(image))
         imageio.mimsave(os.path.join(base_visuals_path, 'rot', f'cam_{cam_index}.gif'), images, fps=5)
 
-    points = torch.cat(points_list, dim=0)
-    rgb = torch.cat(rbgs_list, dim=0)
-    rgb = rgb.float()
-    point_cloud = Pointclouds(points=[points], features=[rgb]).to('cuda')
-    render_360_pc(point_cloud, image_size=(144, 256), output_path=os.path.join(base_output_path, 'point_cloud.gif'), device='cuda')
+    #points = torch.cat(points_list, dim=0)
+    #rgb = torch.cat(rbgs_list, dim=0)
+    #rgb = rgb.float()
+    #point_cloud = Pointclouds(points=[points], features=[rgb]).to('cuda')
+    #render_360_pc(point_cloud, image_size=(144, 256), output_path=os.path.join(base_output_path, 'point_cloud.gif'), device='cuda')
 
     #from plyfile import PlyData, PlyElement
     #storePly(os.path.join(base_output_path, "final_pt_cld.ply"), points, rgb)
-    data = np.zeros((len(points), 7))
-    data[:, :3], data[:, 3:6] = points, rgb
-    data[:, 6] = np.ones((len(points)))
+    #data = np.zeros((len(points), 7))
+    #data[:, :3], data[:, 3:6] = points, rgb
+    #data[:, 6] = np.ones((len(points)))
     
-    np.savez(os.path.join(base_output_path, "final_pt_cld.npz"), data=data)
-    print(f'Saved {len(data)}!')
+    #np.savez(os.path.join(base_output_path, "final_pt_cld.npz"), data=data)
+    #print(f'Saved {len(data)}!')
 
 def storePly(path, xyz, rgb):
     # Define the dtype for the structured array

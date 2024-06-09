@@ -24,15 +24,22 @@ def get_dataset(t, md, seq, mode='stat_only'):
 
     # Specify the directory containing the .jpg files   precise_reduced_im
                 # /ssd0/zihanwa3/data_ego/nice100 '/data3/zihanwa3/Capstone-DSR/Appendix/lalalal_new'# /data3/zihanwa3/Capstone-DSR/Appendix/nice10
-    directory = '/data3/zihanwa3/Capstone-DSR/Appendix/SR100'
+    directory = '/data3/zihanwa3/Capstone-DSR/Appendix/SR10'
     jpg_filenames = get_jpg_filenames(directory)
+
+
+    vis_directory = '/data3/zihanwa3/Capstone-DSR/Appendix/SR10'
+    vis_filenames = get_jpg_filenames(vis_directory)
+
+    
     if mode=='ego_only':
+
       t=0
-      jpg_filenames_2 = np.array(jpg_filenames)+1404
-      jpg_filenames_3 = np.array(jpg_filenames_2)+1400
+
+      epsilon=1e-7
       for lis in [jpg_filenames]: # , jpg_filenames_2, jpg_filenames_3
         #print(sorted(lis)[:30])
-        for c in sorted(lis):
+        for iiiindex, c in sorted(enumerate(lis)):
             h, w = md['hw'][c]
             k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
             cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
@@ -42,23 +49,22 @@ def get_dataset(t, md, seq, mode='stat_only'):
             transform = transforms.ToTensor()
             mask_tensor = transform(mask).squeeze(0)
             anti_mask_tensor = mask_tensor > 1e-5
-            if h==192:
-                image_path = f"/ssd0/zihanwa3/data_ego/{seq}/ims/{fn}"
-                image = Image.open(image_path)
-                gray_image = image.convert('L')
-                im = np.array(copy.deepcopy(gray_image))
-                im = torch.tensor(im).float().cuda() / 255
-                im = im.unsqueeze(0).repeat(3, 1, 1)
-                dataset.append({'cam': cam, 'im': im, 'id': c, 'antimask': anti_mask_tensor})
-            else:
-                im = np.array(copy.deepcopy(Image.open(f"/ssd0/zihanwa3/data_ego/{seq}/ims/{fn}")))
-                im = torch.tensor(im).float().cuda().permute(2, 0, 1) / 255
-                mask_path=f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(t)}/depth_{c}.npz'
-                depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda()
-                dataset.append({'cam': cam, 'im': im, 'id': c, 'antimask': anti_mask_tensor, 'gt_depth':depth})  
-      ## load stat
-    if mode=='stat_only':
-      t=0
+            #if c in vis_filenames:
+            im = np.array(copy.deepcopy(Image.open(f"/ssd0/zihanwa3/data_ego/{seq}/ims/{fn}")))
+            im = torch.tensor(im).float().cuda().permute(2, 0, 1) / 255
+
+            im = torch.rot90(im, k=1, dims=(1, 2))
+
+            mask_path=f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(t)}/depth_{c}.npz'
+            depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda()
+            depth = torch.rot90(depth, k=1, dims=(0, 1))
+            depth = torch.clamp(depth, min=epsilon)
+            depth=1/depth
+
+            #anti_mask_tensor=torch.rot90(anti_mask_tensor, k=1, dims=(0, 1))
+            dataset.append({'cam': cam, 'im': im, 'id': iiiindex, 'antimask': anti_mask_tensor, 'gt_depth':depth, 'vis': True})  
+
+
       for c in range(1400, 1404):
           h, w = md['hw'][c]
 
@@ -68,15 +74,20 @@ def get_dataset(t, md, seq, mode='stat_only'):
           fn = md['fn'][t][c]
           im = np.array(copy.deepcopy(Image.open(f"/ssd0/zihanwa3/data_ego/{seq}/ims/{fn}")))
           im = torch.tensor(im).float().cuda().permute(2, 0, 1) / 255
+          print(im.max(),im.min())
+          im=im.clip(0,1)
+          
           #print(im.shape)
           ############################## First Frame Depth ##############################
           #  f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(cam_id)}/depth_0.npz'
           mask_path=f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(c)-1399}/depth_0.npz'
           depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda()
+          depth = torch.clamp(depth, min=epsilon)
+          depth=1/depth
           #np.savez_compressed(, depth_map=new_depth)
-          dataset.append({'cam': cam, 'im': im, 'id': c, 'gt_depth':depth})  
+          dataset.append({'cam': cam, 'im': im, 'id': c-1400+100, 'gt_depth':depth, 'vis': True})  
 
-    return dataset
+      return dataset
 
 
 
@@ -89,11 +100,11 @@ def get_batch(todo_dataset, dataset):
 
 def initialize_params(seq, md):
     # init_pt_cld_before_dense init_pt_cld
-    init_pt_cld = np.load(f"./data_ego/{seq}/init_pt_cld_before_dense.npz")["data"]
+    init_pt_cld = np.load(f"./data_ego/{seq}/init_correct.npz")["data"]
     #init_pt_cld = np.concatenate((init_pt_cld, init_pt_cld), axis=0)
     print(len(init_pt_cld))
     seg = init_pt_cld[:, 6]
-    max_cams = 4204
+    max_cams = 305
     sq_dist, _ = o3d_knn(init_pt_cld[:, :3], 3)
     mean3_sq_dist = sq_dist.mean(-1).clip(min=0.0000001)
     params = {
@@ -120,14 +131,14 @@ def initialize_params(seq, md):
 
 def initialize_optimizer(params, variables):
     lrs = {
-        'means3D': 0.0000014 * variables['scene_radius'],
-        'rgb_colors': 0.00028,
+        'means3D': 0.000014 * variables['scene_radius'],
+        'rgb_colors': 0.0000028,
         'seg_colors': 0.0,
-        'unnorm_rotations': 0.000,
+        'unnorm_rotations': 0.0005,
         'logit_opacities': 0.01,
-        'log_scales': 0.005,
-        'cam_m': 7e-5,
-        'cam_c': 7e-5,
+        'log_scales': 0.0005,
+        'cam_m': 1e-5,
+        'cam_c': 1e-5,
     }
     '''
             'logit_opacities': 0.05,
@@ -142,6 +153,8 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
     rendervar = params2rendervar(params)
     rendervar['means2D'].retain_grad()
     im, radius, depth_pred, = Renderer(raster_settings=curr_data['cam'])(**rendervar)
+    #print(im.max(),im.min())
+    
  
 
     def rgb_to_grayscale(tensor):
@@ -160,7 +173,11 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
       im=im.unsqueeze(0).repeat(3, 1, 1)
 
     curr_id = curr_data['id']
-    im = torch.exp(params['cam_m'][curr_id])[:, None, None] * im + params['cam_c'][curr_id][:, None, None]
+    #print(params['cam_m'][curr_id], params['cam_c'][curr_id])
+    #im = torch.exp(params['cam_m'][curr_id])[:, None, None] * im + params['cam_c'][curr_id][:, None, None]
+    im=im.clip(0,1)
+    print(im.max(),im.min())
+    #print('-'*100)
     H, W =im.shape[1], im.shape[2]
     top_mask = torch.zeros((H, W), device=im.device)
     top_mask[:, :]=1
@@ -174,14 +191,27 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
         antimask=curr_data['antimask'].to(params['cam_c'][curr_id].device)
         combined_mask = ~torch.logical_or(default_mask, antimask)
         top_mask = combined_mask.type(torch.uint8)
-        im = torch.rot90(im, k=-1, dims=(1, 2))
-        depth_pred=torch.rot90(depth_pred, k=-1, dims=(1, 2))
+        top_mask=torch.rot90(top_mask, k=1, dims=(0, 1))
+        #im = torch.rot90(im, k=-1, dims=(1, 2))
+        #depth_pred=torch.rot90(depth_pred, k=-1, dims=(1, 2))
+        
 
-
+    #depth_pred=1/depth_pred
     ground_truth_depth = curr_data['gt_depth']
+
     depth_pred = depth_pred *  top_mask
     ground_truth_depth = ground_truth_depth * top_mask
-    depth_losses = 0.01 * l1_loss_v1(ground_truth_depth, depth_pred)
+
+    depth_pred = depth_pred.squeeze(0)
+    depth_pred = depth_pred.reshape(-1, 1)
+    ground_truth_depth = ground_truth_depth.reshape(-1, 1)
+    #print(depth_pred.shape, ground_truth_depth.shape)
+    losses['depth'] = min(
+                    (1 - pearson_corrcoef( - ground_truth_depth, depth_pred)),
+                    (1 - pearson_corrcoef(1 / (ground_truth_depth + 200.), depth_pred))
+    )
+
+    #l1_loss_v1(ground_truth_depth, depth_pred)
 
     top_mask = top_mask.unsqueeze(0).repeat(3, 1, 1)
     masked_im = im * top_mask
@@ -189,65 +219,8 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
     masked_curr_data_im = curr_data['im'] * top_mask
 
     losses['im'] = 0.8 * l1_loss_v1(masked_im, masked_curr_data_im) + 0.2 * (1.0 - calc_ssim(masked_im, masked_curr_data_im))
-    #first_ = np.array(masked_curr_data_im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
-    #cv2.imwrite('./sanity.png', first_)
-    def held_stat_loss(stat_dataset, depth_losses):
-        losses = 0 
-        import random
-        random.shuffle(stat_dataset)
-        split_index = 1#len(stat_dataset) #// 4
-        stat_dataset = stat_dataset[:split_index]
-        for i, data in enumerate(stat_dataset):
-            im, radius, depth_pred, = Renderer(raster_settings=data['cam'])(**rendervar)
-            #if im.shape[1]==192:
-            #    im = rgb_to_grayscale(im)
-            #    im=im.unsqueeze(0).repeat(3, 1, 1)
-            curr_id = data['id']
-            im = torch.exp(params['cam_m'][curr_id])[:, None, None] * im + params['cam_c'][curr_id][:, None, None]
-            H, W =im.shape[1], im.shape[2]
-            H, W =im.shape[1], im.shape[2]
-            top_mask = torch.zeros((H, W), device=im.device)
-            top_mask[:, :]=1
-            #c_data=curr_data['im']
 
-            if 'antimask' in data.keys():
-                mask_path='/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/masked_cmu_bike/triangular_mask.jpg'
-                default_mask= torch.tensor(cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE), device=im.device)
-                default_mask = default_mask>1e-5
-
-                antimask=data['antimask'].to(params['cam_c'][curr_id].device)
-                combined_mask = ~torch.logical_or(default_mask, antimask)
-                top_mask = combined_mask.type(torch.uint8)
-                im = torch.rot90(im, k=-1, dims=(1, 2))
-
-                
-            top_mask = top_mask.unsqueeze(0).repeat(3, 1, 1)
-            #print(im.shape, top_mask.shape, data['im'].shape)
-            masked_im = im * top_mask
-            masked_curr_data_im = data['im'] * top_mask
-
-            losses += 0.8 * l1_loss_v1(masked_im, masked_curr_data_im) + 0.2 * (1.0 - calc_ssim(masked_im, masked_curr_data_im))
-            if 'gt_depth' in data.keys():
-                ground_truth_depth = data['gt_depth']
-                depth_pred = depth_pred
-                depth_pred = depth_pred *  top_mask
-                ground_truth_depth = ground_truth_depth * top_mask
-                depth_losses += 0.01 * l1_loss_v1(ground_truth_depth, depth_pred)
-
-            '''
-                ground_truth_depth = data['gt_depth']
-                depth_pred = depth_pred.squeeze(0)
-                depth_pred = depth_pred.reshape(-1, 1)
-                ground_truth_depth = ground_truth_depth.reshape(-1, 1)
-                losses+= 0.1  * min(
-                                (1 - pearson_corrcoef( - ground_truth_depth, depth_pred)),
-                                (1 - pearson_corrcoef(1 / (ground_truth_depth + 200.), depth_pred))
-                )
-                '''
-
-        return losses/split_index, depth_losses/split_index#/7
-    if stat_dataset:
-        losses['stat_im'], losses['depth'] =held_stat_loss(stat_dataset, depth_losses)
+    #losses['stat_im'],  =held_stat_loss(stat_dataset, depth_losses)
 
     variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
 
@@ -288,7 +261,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
         losses['bg'] = l1_loss_v2(bg_pts, variables["init_bg_pts"]) + l1_loss_v2(bg_rot, variables["init_bg_rot"])
         losses['soft_col_cons'] = l1_loss_v2(params['rgb_colors'], variables["prev_col"])
 
-    loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'stat_im':0.01, 'depth': 0.01,
+    loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'depth': 0.1,
                     'soft_col_cons': 0.01}
                     
     loss = sum([loss_weights[k] * v for k, v in losses.items()])
@@ -342,7 +315,8 @@ def initialize_post_first_timestep(params, variables, optimizer, num_knn=20):
             param_group['lr'] = 0.0
     return variables
 
-def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=700):
+def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400):
+    import matplotlib.pyplot as plt
     if i % every_i == 0:
         def get_jpg_filenames(directory):
             jpg_files = [int(file.split('.')[0]) for file in os.listdir(directory) if file.endswith('.jpg')]
@@ -352,29 +326,151 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=700)
                     # /ssd0/zihanwa3/data_ego/nice100 '/data3/zihanwa3/Capstone-DSR/Appendix/lalalal_new'#
         directory = '/data3/zihanwa3/Capstone-DSR/Appendix/SR10'
         jpg_filenames = get_jpg_filenames(directory)
+
+        def combine_images(image1, depth1, image2, depth2):
+            # Convert depth maps to 3-channel images
+            depth1_3channel = cv2.cvtColor(depth1, cv2.COLOR_GRAY2RGB)
+            depth2_3channel = cv2.cvtColor(depth2, cv2.COLOR_GRAY2RGB)
+            
+            # Combine each image and depth side by side
+            combined1 = np.hstack((image1, depth1_3channel))
+            combined2 = np.hstack((image2, depth2_3channel))
+            
+            # Combine the two combined images in a 2x2 grid
+            combined_all = np.vstack((combined1, combined2))
+            return combined_all
+
+        # Your existing loop
         for item, c in enumerate(jpg_filenames):
-            t=0
+
+            t = 0
             h, w = md['hw'][c]
-            k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
+            k, w2c = md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
             cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
-            im, _, _, = Renderer(raster_settings=cam)(**params2rendervar(params))
+            fn = md['fn'][t][c] # mask_{fn.split('/')[0]}
+            gt_im = np.array(copy.deepcopy(Image.open(f"/ssd0/zihanwa3/data_ego/cmu_bike/ims/{fn}")))
+            gt_im = torch.tensor(gt_im).float().cuda().permute(2, 0, 1) / 255
+            gt_im = torch.rot90(gt_im, k=1, dims=(1, 2))
+            mask_path='/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/masked_cmu_bike/triangular_mask.jpg'
+            default_mask= torch.tensor(cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE), device=gt_im.device)
+            default_mask = default_mask>1e-5
+
+            mask_path=f"/ssd0/zihanwa3/data_ego/lalalal_newmask/{fn.split('/')[-1]}"
+            mask = Image.open(mask_path).convert("L")
+            transform = transforms.ToTensor()
+            mask_tensor = transform(mask).squeeze(0).to(gt_im.device)
+            antimask = mask_tensor > 1e-5
+            combined_mask = ~torch.logical_or(default_mask, antimask)
+            top_mask = combined_mask.type(torch.uint8)
+            top_mask=torch.rot90(top_mask, k=1, dims=(0, 1))
+
+            gt_im *= top_mask
+            gt_im = gt_im.permute(1, 2, 0).cpu().numpy() * 255
+            gt_im = gt_im.astype(np.uint8)
+
+            gt_im = cv2.resize(gt_im, (256, 256), interpolation=cv2.INTER_LINEAR)
+
+            gt_depth=f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(t)}/depth_{c}.npz'
+            gt_depth = torch.tensor(np.load(gt_depth)['depth_map']).float().cuda()  #/ 255
+            gt_depth=torch.rot90(gt_depth, k=1, dims=(0, 1))
+            
+            min_val = torch.min(gt_depth)
+            max_val = torch.max(gt_depth)
+            gt_depth = (gt_depth - min_val) / (max_val - min_val)
+            
+            
+            # Scale to range [0, 255]
+            gt_depth = gt_depth * 255.0
+            gt_depth *= top_mask
+
+            gt_depth = gt_depth.cpu().numpy() #* 30 #* 255
+            ## 
+
+            gt_depth = gt_depth.astype(np.uint8)
+            
+            gt_depth = cv2.resize(gt_depth, (256, 256), interpolation=cv2.INTER_LINEAR)
+
+            
+            im, _, depth = Renderer(raster_settings=cam)(**params2rendervar(params))
+
+
+                    # Process image
             im = torch.rot90(im, k=-1, dims=(1, 2))
             im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
             im_wandb = im_wandb.astype(np.uint8)
-            new_width, new_height = 256, 256  # desired dimensions
-            im_wandb = cv2.resize(im_wandb, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
-            wandb.log({f"held_out_image_{item}": wandb.Image(im_wandb, caption=f"Rendered image at iteration {i}")})
+            im_wandb = cv2.resize(im_wandb, (256, 256), interpolation=cv2.INTER_LINEAR)
+            
+            # Process depth
+            depth = torch.rot90(depth, k=-1, dims=(1, 2))
+            min_val = torch.min(depth)
+            max_val = torch.max(depth)
+            depth = (depth - min_val) / (max_val - min_val)
 
-        for c in range(1400,1404):
+
+            depth = depth.permute(1, 2, 0).cpu().numpy() * 255
+            depth = depth.astype(np.uint8)
+            depth = cv2.resize(depth, (256, 256), interpolation=cv2.INTER_LINEAR)
+            
+            # Combine image and depth
+            #print(im_wandb.shape, depth.shape)
+            combined = combine_images(gt_im, gt_depth, im_wandb, depth)
+            
+            # Log combined image
+            wandb.log({
+                f"held_out_combined_{item}": wandb.Image(combined, caption=f"Rendered image and depth at iteration {i}")
+            })
+
+        for c in range(1400, 1404):
             h, w = md['hw'][c]
-            k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
+            k, w2c = md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
             cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
-            im, _, _, = Renderer(raster_settings=cam)(**params2rendervar(params))
+            fn = md['fn'][t][c] # mask_{fn.split('/')[0]}
+            
+            gt_im = np.array(copy.deepcopy(Image.open(f"/ssd0/zihanwa3/data_ego/cmu_bike/ims/{fn}")))
+            gt_im = torch.tensor(gt_im).float().cuda().permute(2, 0, 1) / 255
+            gt_im = gt_im.permute(1, 2, 0).cpu().numpy() * 255
+            gt_im = gt_im.astype(np.uint8)
+            gt_im = cv2.resize(gt_im, (256, 144), interpolation=cv2.INTER_CUBIC)
+
+            gt_depth=f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(c)-1399}/depth_0.npz'
+            gt_depth = torch.tensor(np.load(gt_depth)['depth_map']).float().cuda()  #/ 255
+            #min_val = torch.min(gt_depth)
+            #max_val = torch.max(gt_depth)
+            #gt_depth = (gt_depth - min_val) / (max_val - min_val)
+
+            # Scale to range [0, 255]
+            #gt_depth = gt_depth * 255.0
+
+            gt_depth = gt_depth.cpu().numpy() #* 30 #* 255
+            ## 
+
+            gt_depth = gt_depth.astype(np.uint8)
+            gt_depth = cv2.resize(gt_depth, (256, 144), interpolation=cv2.INTER_CUBIC)
+
+            
+            im, _, depth = Renderer(raster_settings=cam)(**params2rendervar(params))
+            im=im.clip(0,1)
+            
+            # Process image
             im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
             im_wandb = im_wandb.astype(np.uint8)
-            new_width, new_height = 256, 144  # desired dimensions
-            im_wandb = cv2.resize(im_wandb, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
-            wandb.log({f"stat_image_{c-1399}": wandb.Image(im_wandb, caption=f"Rendered image at iteration {i}")})
+            im_wandb = cv2.resize(im_wandb, (256, 144), interpolation=cv2.INTER_CUBIC)
+            
+            # Process depth
+            #depth = torch.rot90(depth, k=-1, dims=(1, 2))
+            depth = depth.permute(1, 2, 0).cpu().numpy() * 255
+            depth = depth.astype(np.uint8)
+            depth = cv2.resize(depth, (256, 144), interpolation=cv2.INTER_CUBIC)
+            
+            # Combine image and depth
+            #print(im_wandb.shape, depth.shape)
+            combined = combine_images(gt_im, gt_depth, im_wandb, depth)
+         
+            # Log combined image
+            wandb.log({
+                f"stat_combined_{c-1399}": wandb.Image(combined, caption=f"Rendered image and depth at iteration {i}")
+            })
+
 
 def report_progress(params, data, i, progress_bar, every_i=100):
     if i % every_i == 0:
@@ -416,18 +512,13 @@ def train(seq, exp):
     
     for t in range(7):
         dataset = get_dataset(t, md, seq, mode='ego_only')
-        stat_dataset = get_dataset(t, md, seq, mode='stat_only')
-
-
-        #dataset
-
-
+        stat_dataset = None
         todo_dataset = []
         is_initial_timestep = (t == 0)
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
 
-        num_iter_per_timestep = int(4.9e3) if is_initial_timestep else 2
+        num_iter_per_timestep = int(7.7e4) if is_initial_timestep else 2
         progress_bar = tqdm(range(num_iter_per_timestep), desc=f"timestep {t}")
         for i in range(num_iter_per_timestep):
             curr_data = get_batch(todo_dataset, dataset)
@@ -436,7 +527,7 @@ def train(seq, exp):
             loss.backward()
             with torch.no_grad():
                 report_progress(params, dataset[0], i, progress_bar)
-                report_stat_progress(params, stat_dataset, i, progress_bar,md)
+                report_stat_progress(params, curr_data, i, progress_bar,md)
                 if is_initial_timestep:
                     params, variables = densify(params, variables, optimizer, i)
                 assert ((params['means3D'].shape[0]==0) is False)
