@@ -417,9 +417,11 @@ def visualize(seq, exp):
                 [0, 0, 0, 1]
             ], device="cuda").unsqueeze(0)
 
+
+
             camera_rotation = rotation_matrix.cpu() @ w2c[None, ...]
             im, depth = render(camera_rotation[0], k, scene_data, w, h, near, far)
-
+            im=im.clip(0,1)
             first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
             im = np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
             new_width, new_height = 256, 144  # desired dimensions
