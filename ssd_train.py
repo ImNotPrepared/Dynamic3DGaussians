@@ -58,8 +58,8 @@ def get_dataset(t, md, seq, mode='stat_only'):
             mask_path=f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(t)}/depth_{c}.npz'
             depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda()
             depth = torch.rot90(depth, k=1, dims=(0, 1))
-            depth = torch.clamp(depth, min=epsilon)
-            depth=1/depth
+            #depth = torch.clamp(depth, min=epsilon)
+            depth=1/(depth+100.)
 
             #anti_mask_tensor=torch.rot90(anti_mask_tensor, k=1, dims=(0, 1))
             dataset.append({'cam': cam, 'im': im, 'id': iiiindex, 'antimask': anti_mask_tensor, 'gt_depth':depth, 'vis': True})  
@@ -82,8 +82,7 @@ def get_dataset(t, md, seq, mode='stat_only'):
           #  f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(cam_id)}/depth_0.npz'
           mask_path=f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(c)-1399}/depth_0.npz'
           depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda()
-          depth = torch.clamp(depth, min=epsilon)
-          depth=1/depth
+          depth=1/(depth+100)
           #np.savez_compressed(, depth_map=new_depth)
           dataset.append({'cam': cam, 'im': im, 'id': c-1400+100, 'gt_depth':depth, 'vis': True})  
 
@@ -102,6 +101,7 @@ def get_batch(todo_dataset, dataset):
     return [curr_data] #[curr_data] todo_dataset#
 
 
+    
 def initialize_params(seq, md):
     # init_pt_cld_before_dense init_pt_cld
     init_pt_cld = np.load(f"./data_ego/{seq}/init_correct.npz")["data"]
@@ -135,7 +135,7 @@ def initialize_params(seq, md):
 
 def initialize_optimizer(params, variables):
     lrs = {
-        'means3D': 0.000014 * variables['scene_radius'], # 0000014
+        'means3D': 0.000014 *  variables['scene_radius'], # 0000014
         'rgb_colors': 0.00028, ###0.0028 will fail
         'seg_colors': 0.0,
         'unnorm_rotations': 0.000000,
@@ -186,15 +186,21 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
 
       ground_truth_depth = curr_data['gt_depth']
 
+      
       depth_pred = depth_pred *  top_mask
       ground_truth_depth = ground_truth_depth * top_mask
 
       depth_pred = depth_pred.squeeze(0)
       depth_pred = depth_pred.reshape(-1, 1)
       ground_truth_depth = ground_truth_depth.reshape(-1, 1)
+
+      depth_pred=depth_pred[depth_pred!=0]
+      ground_truth_depth=ground_truth_depth[ground_truth_depth!=0]
+
+      #print(depth_pred.shape,  top_mask.shape)
       #print(depth_pred.shape, ground_truth_depth.shape)
       #  gt_depth: 1/zoe_depth(metric_depth) -> 1/real_depth; gasussian
-      losses['depth'] += (1 - pearson_corrcoef( ground_truth_depth, 1/(depth_pred+1e-7)))
+      losses['depth'] +=   (1 - pearson_corrcoef( ground_truth_depth, 1/(depth_pred+100)))
 
       #l1_loss_v1(ground_truth_depth, depth_pred)
 
@@ -210,7 +216,7 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
 
     variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
 
-    loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'depth': 0.1,
+    loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'depth': 0.0001,
                     'soft_col_cons': 0.01}
                     
     loss = sum([loss_weights[k] * v for k, v in losses.items()])
@@ -471,7 +477,7 @@ def train(seq, exp):
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
 
-        num_iter_per_timestep = int(7.7e4) if is_initial_timestep else 2
+        num_iter_per_timestep = int(2.1e6) if is_initial_timestep else 2
         progress_bar = tqdm(range(num_iter_per_timestep), desc=f"timestep {t}")
         for i in range(num_iter_per_timestep):
             curr_data = get_batch(todo_dataset, dataset)
@@ -510,4 +516,4 @@ if __name__ == "__main__":
         train(sequence, exp_name)
         torch.cuda.empty_cache()
         from visualize import visualize
-        visualize(sequence, exp_name)
+        visualize(sequence, exp_name)                                                                                              

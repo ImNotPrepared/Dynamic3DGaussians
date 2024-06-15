@@ -377,6 +377,10 @@ def visualize(seq, exp):
         camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
 
         im, depth = render(w2c, k, scene_data, w, h, near, far)
+        print(depth.max(),depth.min(),depth.shape)
+        np.savez(f'/data3/zihanwa3/Capstone-DSR/Processing/toy_exp/gaussian_depth/cam_{cam_index-1399}', depth=depth.detach().cpu())
+        
+        
         im=im.clip(0,1)
         new_width, new_height = 256, 144  # desired dimensions
         im=im.detach().cpu().permute(1, 2, 0).numpy()
