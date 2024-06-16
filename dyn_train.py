@@ -252,13 +252,19 @@ def initialize_optimizer(params, variables):
     return torch.optim.Adam(param_groups, lr=0.0, eps=1e-15)
 
 def composite_scene(org_params, fg_params):
-    for k, v in fg_params.items():
-        with torch.no_grad():
-            params_no_grad = org_params[k].detach()  # 确保 params_no_grad 不需要梯度
-            if len(params_no_grad.shape) == 3:
-                params_no_grad = params_no_grad[0]
-        fg_params[k] = torch.cat((v, params_no_grad), dim=0)
-    return fg_params
+  for k, v in fg_params.items():
+    params_no_grad = org_params[k]
+    if len(params_no_grad.shape) == 3:
+      params_no_grad = params_no_grad[0]
+    fg_params[k] = torch.cat((params_no_grad, v), dim=0)
+  for k, v in fg_params.items():
+      # Check if value is already a torch tensor
+      if not isinstance(v, torch.Tensor):
+          fg_params[k] = torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True))
+      else:
+          fg_params[k] = torch.nn.Parameter(v.cuda().float().contiguous().requires_grad_(True))
+  return fg_params
+
 
 def initialize_org_params(seq, md, exp):
     # init_pt_cld_before_dense init_pt_cld
@@ -269,14 +275,14 @@ def initialize_org_params(seq, md, exp):
 
 def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=None, org_params=None):
     losses = {}
-    rendervar = params2rendervar(params)
-    rendervar['means2D'].retain_grad()
     
-    
-    
-    #rendervar = params2rendervar(composite_scene(org_params, params))
+    rendervar = params2rendervar(composite_scene(org_params, params))
     
     im, radius, depth_pred, = Renderer(raster_settings=curr_data['cam'])(**rendervar)
+    for k, v in rendervar.items():
+      rendervar[k]=v[38312:].cuda().float().contiguous().requires_grad_(True)
+    radius=radius[38312:]
+    rendervar['means2D'].retain_grad()
 
     ##im, radius, depth_pred, = Renderer(raster_settings=curr_data['cam'])(**rendervar)
 
@@ -369,9 +375,9 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
                     
     loss = sum([loss_weights[k] * v for k, v in losses.items()])
     seen = radius > 0
-    print(variables['max_2D_radius'].shape, radius.shape)
-    variables['max_2D_radius'][seen] = torch.max(radius[seen], variables['max_2D_radius'][seen])
-    variables['seen'] = seen
+    #variables['max_2D_radius'][seen] = torch.max(radius[seen], variables['max_2D_radius'][seen])
+    #variables['seen'] = seen
+    
     return loss, variables, losses
 
 
@@ -477,6 +483,7 @@ def train(seq, exp):
 
             loss, variables, losses = get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=stat_dataset, org_params=org_params)
             loss.backward()
+            print(variables['means2D'].grad)
             with torch.no_grad():
                 report_progress(params, dataset[0], i, progress_bar)
                 report_stat_progress(params, t, i, progress_bar, md)
