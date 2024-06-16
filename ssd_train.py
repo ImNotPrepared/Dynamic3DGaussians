@@ -485,8 +485,8 @@ def train(seq, exp):
             loss, variables, losses = get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=stat_dataset)
             loss.backward()
             with torch.no_grad():
-                report_progress(params, dataset[0], i, progress_bar)
-                report_stat_progress(params, curr_data, i, progress_bar,md)
+                #report_progress(params, dataset[0], i, progress_bar)
+                #report_stat_progress(params, curr_data, i, progress_bar,md)
                 if is_initial_timestep:
                     params, variables = densify(params, variables, optimizer, i)
                 assert ((params['means3D'].shape[0]==0) is False)

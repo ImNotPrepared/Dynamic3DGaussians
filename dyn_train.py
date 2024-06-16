@@ -174,7 +174,7 @@ def initialize_params(seq, md, exp):
                  'denom': torch.zeros(params['means3D'].shape[0]).cuda().float()}
     return params, variables, scene_radius
 
-def add_new_gaussians(params, variables, scene_radius):
+def add_new_gaussians(params, variables, scene_radius, org_params):
     '''
     print(k)
     means3D
@@ -187,19 +187,6 @@ def add_new_gaussians(params, variables, scene_radius):
     new_pt_cld = np.load(path)["data"]
     print('dyn_len', len(new_pt_cld))
     new_params = initialize_new_params(new_pt_cld)
-
-    
-    variables = {'max_2D_radius': torch.zeros(new_params['means3D'].shape[0]).cuda().float(),
-                 'scene_radius': scene_radius,
-                 'means2D_gradient_accum': torch.zeros(new_params['means3D'].shape[0]).cuda().float(),
-                 'denom': torch.zeros(new_params['means3D'].shape[0]).cuda().float()}
-    for k, v in new_params.items():
-      params_no_grad = params[k]#.requires_grad_(False)  # 使 params[k] 不需要梯度
-      if len(params_no_grad.shape) == 3:
-        params_no_grad=params_no_grad[0]
-        
-      #print(params_no_grad.shape, v.shape)
-      new_params[k] = torch.cat((params_no_grad, v), dim=0)
     for k, v in new_params.items():
         # Check if value is already a torch tensor
         if not isinstance(v, torch.Tensor):
@@ -210,9 +197,16 @@ def add_new_gaussians(params, variables, scene_radius):
                  'scene_radius': scene_radius,
                  'means2D_gradient_accum': torch.zeros(new_params['means3D'].shape[0]).cuda().float(),
                  'denom': torch.zeros(new_params['means3D'].shape[0]).cuda().float()}
+    '''
+    adhoc_params=composite_scene(org_params, new_params)
+    all_variables = {'max_2D_radius': torch.zeros(adhoc_params['means3D'].shape[0]).cuda().float(),
+                 'scene_radius': scene_radius,
+                 'means2D_gradient_accum': torch.zeros(adhoc_params['means3D'].shape[0]).cuda().float(),
+                 'denom': torch.zeros(adhoc_params['means3D'].shape[0]).cuda().float()}        
     print('stat_len', len(params['means3D'][0]))
     print('overall_len', len(new_params['means3D']))
-    return new_params, variables
+    '''
+    return new_params, variables, variables
 
 def initialize_new_params(new_pt_cld):
     num_pts = new_pt_cld.shape[0]
@@ -259,16 +253,16 @@ def initialize_optimizer(params, variables):
 
 def composite_scene(org_params, fg_params):
     for k, v in fg_params.items():
-      params_no_grad = org_params[k]#.requires_grad_(False)  # 使 params[k] 不需要梯度
-      if len(params_no_grad.shape) == 3:
-        params_no_grad=params_no_grad[0]
-      #print(params_no_grad.shape, v.shape)
-      fg_params[k] = torch.cat((v,params_no_grad), dim=0)
+        with torch.no_grad():
+            params_no_grad = org_params[k].detach()  # 确保 params_no_grad 不需要梯度
+            if len(params_no_grad.shape) == 3:
+                params_no_grad = params_no_grad[0]
+        fg_params[k] = torch.cat((v, params_no_grad), dim=0)
     return fg_params
 
 def initialize_org_params(seq, md, exp):
     # init_pt_cld_before_dense init_pt_cld
-    ckpt_path=f'./output/{exp}/{seq}/params.npz'
+    ckpt_path=f'./output/+100depth_0.1/{seq}/params.npz'
     params = dict(np.load(ckpt_path, allow_pickle=True))
     params = {k: torch.tensor(params[k]).cuda().float().requires_grad_(True) for k in params.keys()}
     return params
@@ -278,10 +272,13 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
     rendervar = params2rendervar(params)
     rendervar['means2D'].retain_grad()
     
-    params=composite_scene(org_params, params)
-    rendervar = params2rendervar(params)
-
+    
+    
+    #rendervar = params2rendervar(composite_scene(org_params, params))
+    
     im, radius, depth_pred, = Renderer(raster_settings=curr_data['cam'])(**rendervar)
+
+    ##im, radius, depth_pred, = Renderer(raster_settings=curr_data['cam'])(**rendervar)
 
 
     def rgb_to_grayscale(tensor):
@@ -372,6 +369,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
                     
     loss = sum([loss_weights[k] * v for k, v in losses.items()])
     seen = radius > 0
+    print(variables['max_2D_radius'].shape, radius.shape)
     variables['max_2D_radius'][seen] = torch.max(radius[seen], variables['max_2D_radius'][seen])
     variables['seen'] = seen
     return loss, variables, losses
@@ -454,13 +452,14 @@ def train(seq, exp):
 
     num_timesteps = len(md['fn'])
     params, variables, sriud = initialize_params(seq, md, exp)
+    org_params=initialize_org_params(seq, md, exp)
 
-    params, variables =  add_new_gaussians(params, variables, sriud)
+    params, variables, all_variables =  add_new_gaussians(params, variables, sriud, org_params)
     optimizer = initialize_optimizer(params, variables)
     output_params = []
 
     initialize_wandb(exp, seq)
-    org_params=initialize_params(seq, md, exp)
+   
 
     
     for t in reversed(range(109,111)):
