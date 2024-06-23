@@ -124,6 +124,9 @@ def initialize_params(seq, md):
     print(params['log_scales'].shape)
     params = {k: torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True)) for k, v in
               params.items()}
+
+
+              
     cam_centers = np.linalg.inv(md['w2c'][0])[:, :3, 3]  # Get scene radius
     scene_radius = 1.1 * np.max(np.linalg.norm(cam_centers - np.mean(cam_centers, 0)[None], axis=-1))
     variables = {'max_2D_radius': torch.zeros(params['means3D'].shape[0]).cuda().float(),
@@ -516,4 +519,4 @@ if __name__ == "__main__":
         train(sequence, exp_name)
         torch.cuda.empty_cache()
         from visualize import visualize
-        visualize(sequence, exp_name)                                                                                              
+        visualize(sequence, exp_name)

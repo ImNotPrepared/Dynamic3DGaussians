@@ -149,9 +149,20 @@ def get_dataset(t, md, seq, mode='stat_only'):
           im=im.clip(0,1)
           if h == w:
             im = torch.rot90(im, k=1, dims=(1, 2))
+          else:
+            mask_path=f'/data3/zihanwa3/Capstone-DSR/Processing/toy_exp/depth/depth_{c}.npz'
+            depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda()
+            depth=1/(depth+100.)
 
-          #anti_mask_tensor=torch.rot90(anti_mask_tensor, k=1, dims=(0, 1))
-          dataset.append({'cam': cam, 'im': im, 'id': c, 'vis': True})  
+          try:
+            mask_path=f"/data3/zihanwa3/Capstone-DSR/Processing/toy_exp/mask/cam_{c}.png"
+            mask = Image.open(mask_path).convert("L")
+            transform = transforms.ToTensor()
+            mask_tensor = transform(mask).squeeze(0)
+            anti_mask_tensor = mask_tensor > 1e-5
+            dataset.append({'cam': cam, 'im': im, 'id': iiiindex, 'antimask': anti_mask_tensor, 'gt_depth':depth, 'vis': True}) 
+          except: 
+            dataset.append({'cam': cam, 'im': im, 'id': c, 'vis': True})  
       return dataset
 def get_batch(todo_dataset, dataset):
     if not todo_dataset:
@@ -174,7 +185,7 @@ def initialize_params(seq, md, exp):
                  'denom': torch.zeros(params['means3D'].shape[0]).cuda().float()}
     return params, variables, scene_radius
 
-def add_new_gaussians(params, variables, scene_radius, org_params):
+def add_new_gaussians(params, variables, scene_radius):
     '''
     print(k)
     means3D
@@ -183,10 +194,23 @@ def add_new_gaussians(params, variables, scene_radius, org_params):
     logit_opacities
     log_scales
     '''
-    path='/data3/zihanwa3/Capstone-DSR/Appendix/ZoeDepth/aug_person.npz'
+    path='/data3/zihanwa3/Capstone-DSR/Processing/3D/aug_person.npz'
     new_pt_cld = np.load(path)["data"]
     print('dyn_len', len(new_pt_cld))
     new_params = initialize_new_params(new_pt_cld)
+
+    
+    variables = {'max_2D_radius': torch.zeros(new_params['means3D'].shape[0]).cuda().float(),
+                 'scene_radius': scene_radius,
+                 'means2D_gradient_accum': torch.zeros(new_params['means3D'].shape[0]).cuda().float(),
+                 'denom': torch.zeros(new_params['means3D'].shape[0]).cuda().float()}
+    for k, v in new_params.items():
+      params_no_grad = params[k]#.requires_grad_(False)  # 使 params[k] 不需要梯度
+      if len(params_no_grad.shape) == 3:
+        params_no_grad=params_no_grad[0]
+        
+      #print(params_no_grad.shape, v.shape)
+      new_params[k] = torch.cat((params_no_grad, v), dim=0)
     for k, v in new_params.items():
         # Check if value is already a torch tensor
         if not isinstance(v, torch.Tensor):
@@ -197,16 +221,9 @@ def add_new_gaussians(params, variables, scene_radius, org_params):
                  'scene_radius': scene_radius,
                  'means2D_gradient_accum': torch.zeros(new_params['means3D'].shape[0]).cuda().float(),
                  'denom': torch.zeros(new_params['means3D'].shape[0]).cuda().float()}
-    '''
-    adhoc_params=composite_scene(org_params, new_params)
-    all_variables = {'max_2D_radius': torch.zeros(adhoc_params['means3D'].shape[0]).cuda().float(),
-                 'scene_radius': scene_radius,
-                 'means2D_gradient_accum': torch.zeros(adhoc_params['means3D'].shape[0]).cuda().float(),
-                 'denom': torch.zeros(adhoc_params['means3D'].shape[0]).cuda().float()}        
     print('stat_len', len(params['means3D'][0]))
     print('overall_len', len(new_params['means3D']))
-    '''
-    return new_params, variables, variables
+    return new_params, variables
 
 def initialize_new_params(new_pt_cld):
     num_pts = new_pt_cld.shape[0]
@@ -235,9 +252,9 @@ def initialize_new_params(new_pt_cld):
 
 def initialize_optimizer(params, variables):
     lrs = {
-        'means3D': 0.00014 * variables['scene_radius'], # 0000014
-        'rgb_colors': 0.00028, ###0.0028 will fail
-        'unnorm_rotations': 0.000000,
+        'means3D': 0.0000014 * variables['scene_radius'], # 0000014
+        'rgb_colors': 0.000028, ###0.0028 will fail
+        'unnorm_rotations': 0.0000001,
         'seg_colors':0.0,
         'logit_opacities': 0.01,
         'log_scales': 0.005,
@@ -251,40 +268,20 @@ def initialize_optimizer(params, variables):
     param_groups = [{'params': [v], 'name': k, 'lr': lrs[k]} for k, v in params.items()]
     return torch.optim.Adam(param_groups, lr=0.0, eps=1e-15)
 
-def composite_scene(org_params, fg_params):
-  for k, v in fg_params.items():
-    params_no_grad = org_params[k]
-    if len(params_no_grad.shape) == 3:
-      params_no_grad = params_no_grad[0]
-    fg_params[k] = torch.cat((params_no_grad, v), dim=0)
-  for k, v in fg_params.items():
-      # Check if value is already a torch tensor
-      if not isinstance(v, torch.Tensor):
-          fg_params[k] = torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True))
-      else:
-          fg_params[k] = torch.nn.Parameter(v.cuda().float().contiguous().requires_grad_(True))
-  return fg_params
-
-
 def initialize_org_params(seq, md, exp):
     # init_pt_cld_before_dense init_pt_cld
-    ckpt_path=f'./output/+100depth_0.1/{seq}/params.npz'
+    ckpt_path=f'./output/{exp}/{seq}/params.npz'
     params = dict(np.load(ckpt_path, allow_pickle=True))
     params = {k: torch.tensor(params[k]).cuda().float().requires_grad_(True) for k in params.keys()}
     return params
 
 def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=None, org_params=None):
     losses = {}
-    
-    rendervar = params2rendervar(composite_scene(org_params, params))
-    
-    im, radius, depth_pred, = Renderer(raster_settings=curr_data['cam'])(**rendervar)
-    for k, v in rendervar.items():
-      rendervar[k]=v[38312:].cuda().float().contiguous().requires_grad_(True)
-    radius=radius[38312:]
+    rendervar = params2rendervar(params)
     rendervar['means2D'].retain_grad()
 
-    ##im, radius, depth_pred, = Renderer(raster_settings=curr_data['cam'])(**rendervar)
+
+    im, radius, depth_pred, = Renderer(raster_settings=curr_data['cam'])(**rendervar)
 
 
     def rgb_to_grayscale(tensor):
@@ -312,19 +309,31 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
     top_mask[:, :]=1
     #c_data=curr_data['im']
 
-    if H==W:
-      mask_path='/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/masked_cmu_bike/triangular_mask.jpg'
-      default_mask= torch.tensor(cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE), device=im.device)
-      default_mask = default_mask>1e-5
-      combined_mask = default_mask
-      top_mask = combined_mask.type(torch.uint8)
-      top_mask=torch.rot90(top_mask, k=1, dims=(0, 1))
-        
+    if 'antimask' in curr_data.keys():
+        antimask=curr_data['antimask'].to(params['cam_c'][curr_id].device)
+        combined_mask = antimask
+        top_mask = combined_mask.type(torch.uint8)
+
+        ground_truth_depth = curr_data['gt_depth']
+        depth_pred = depth_pred *  top_mask
+        ground_truth_depth = ground_truth_depth * top_mask
+
+        depth_pred = depth_pred.squeeze(0)
+        depth_pred = depth_pred.reshape(-1, 1)
+        ground_truth_depth = ground_truth_depth.reshape(-1, 1)
+
+        depth_pred=depth_pred[depth_pred!=0]
+        ground_truth_depth=ground_truth_depth[ground_truth_depth!=0]
+
+        #print(depth_pred.shape,  top_mask.shape)
+        #print(depth_pred.shape, ground_truth_depth.shape)
+        #  gt_depth: 1/zoe_depth(metric_depth) -> 1/real_depth; gasussian
+        losses['depth'] =   (1 - pearson_corrcoef( ground_truth_depth, 1/(depth_pred+100)))
+
+    #l1_loss_v1(ground_truth_depth, depth_pred)
 
     top_mask = top_mask.unsqueeze(0).repeat(3, 1, 1)
-
     masked_im = im * top_mask
-
 
     masked_curr_data_im = curr_data['im'] * top_mask
 
@@ -371,12 +380,12 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
         losses['bg'] = l1_loss_v2(bg_pts, variables["init_bg_pts"]) + l1_loss_v2(bg_rot, variables["init_bg_rot"])
         losses['soft_col_cons'] = l1_loss_v2(params['rgb_colors'], variables["prev_col"])
 
-    loss_weights = {'im': 0.1, 'rigid': 0.4, 'rot': 0.4, 'iso': 0.2, 'floor': 0.2, 'bg': 2.0, 'soft_col_cons': 0.01}
+    loss_weights = {'im': 0.1, 'rigid': 0.4, 'rot': 0.4, 'iso': 0.2, 'floor': 0.2, 'bg': 2.0, 'soft_col_cons': 0.01, 'depth':0.1}
                     
     loss = sum([loss_weights[k] * v for k, v in losses.items()])
     seen = radius > 0
-    #variables['max_2D_radius'][seen] = torch.max(radius[seen], variables['max_2D_radius'][seen])
-    #variables['seen'] = seen
+    variables['max_2D_radius'][seen] = torch.max(radius[seen], variables['max_2D_radius'][seen])
+    variables['seen'] = seen
     
     return loss, variables, losses
 
@@ -429,6 +438,7 @@ def report_progress(params, data, i, progress_bar, every_i=100):
     if i % every_i == 0:
         im, _, _, = Renderer(raster_settings=data['cam'])(**params2rendervar(params))
         curr_id = data['id']
+        im=im.clip(0,1)
         #im = torch.exp(params['cam_m'][curr_id])[:, None, None] * im + params['cam_c'][curr_id][:, None, None]
         psnr = calc_psnr(im, data['im']).mean()
         progress_bar.set_postfix({"train img 0 PSNR": f"{psnr:.{7}f}"})
@@ -458,17 +468,16 @@ def train(seq, exp):
 
     num_timesteps = len(md['fn'])
     params, variables, sriud = initialize_params(seq, md, exp)
-    org_params=initialize_org_params(seq, md, exp)
 
-    params, variables, all_variables =  add_new_gaussians(params, variables, sriud, org_params)
+    params, variables =  add_new_gaussians(params, variables, sriud)
     optimizer = initialize_optimizer(params, variables)
     output_params = []
 
     initialize_wandb(exp, seq)
-   
+    org_params=initialize_params(seq, md, exp)
 
     
-    for t in reversed(range(109,111)):
+    for t in reversed(range(111)):
         t=int(t)
         dataset = get_dataset(t, md, seq, mode='ego_only')
         stat_dataset = None
@@ -476,14 +485,20 @@ def train(seq, exp):
         is_initial_timestep = (int(t) == 110)
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
-        num_iter_per_timestep = int(2.1e3) if is_initial_timestep else int(2e3)
+        num_iter_per_timestep = int(2.8e3) if is_initial_timestep else int(2.1e3)
         progress_bar = tqdm(range(int(num_iter_per_timestep)), desc=f"timestep {t}")
         for i in range(num_iter_per_timestep):
             curr_data = get_batch(todo_dataset, dataset)
 
             loss, variables, losses = get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=stat_dataset, org_params=org_params)
             loss.backward()
-            print(variables['means2D'].grad)
+            for k, v in variables.items():
+              try:
+                print(k, v.grad.shape)
+              except:
+                print('false',  k)
+            #variables['means2D'].grad[:38312, :] =  0
+
             with torch.no_grad():
                 report_progress(params, dataset[0], i, progress_bar)
                 report_stat_progress(params, t, i, progress_bar, md)
@@ -506,14 +521,20 @@ def train(seq, exp):
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Run training and visualization for a sequence.")
+    parser = ArgumentParser(description="Training script parameters")
+    lp = ModelParams(parser)
+    op = OptimizationParams(parser)
+    pp = PipelineParams(parser)
+
     parser.add_argument('--exp_name', type=str, required=True, help='Name of the experiment')
     args = parser.parse_args()
 
     exp_name = args.exp_name
     #for sequence in ["basketball", "boxes", "football", "juggle", "softball", "tennis"]:
     for sequence in ["cmu_bike"]:
-        train(sequence, exp_name)
+        train(sequence, exp_name, )
         torch.cuda.empty_cache()
         from visualize import visualize
+        visualize(sequence, exp_name)
+        from visualize_dyn import visualize
         visualize(sequence, exp_name)

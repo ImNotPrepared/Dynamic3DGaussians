@@ -211,3 +211,13 @@ def densify(params, variables, optimizer, i):
             params = update_params_and_optimizer(new_params, params, optimizer)
 
     return params, variables
+
+
+
+
+'''{"render": rendered_image,
+            "viewspace_points": screenspace_points,
+            "visibility_filter" : radii > 0,
+            "radii": radii,
+            'feature_map': feature_map,
+            "depth": depth} ###d'''
