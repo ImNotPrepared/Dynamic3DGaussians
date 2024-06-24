@@ -19,84 +19,7 @@ from scene import Scene, GaussianModel
 
 
 
-def get_loss(params, curr_data, variables, is_initial_timestep):
-    losses = {}
 
-    feature_map, image, viewspace_point_tensor, visibility_filter, radii, depth_pred = render_pkg["feature_map"], render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"], render_pkg["depth"]
-        
-    curr_id = curr_data['id']
-    im=im.clip(0,1)
-
-    H, W =im.shape[1], im.shape[2]
-    top_mask = torch.zeros((H, W), device=im.device)
-    top_mask[:, :]=1
-
-    if 'antimask' in curr_data.keys():
-        antimask=curr_data['antimask'].cuda()
-        combined_mask = antimask
-        top_mask = combined_mask.type(torch.uint8)
-        ground_truth_depth = curr_data['gt_depth']
-        depth_pred = depth_pred *  top_mask
-        ground_truth_depth = ground_truth_depth * top_mask
-
-        depth_pred = depth_pred.squeeze(0)
-        depth_pred = depth_pred.reshape(-1, 1)
-        ground_truth_depth = ground_truth_depth.reshape(-1, 1)
-
-        depth_pred=depth_pred[depth_pred!=0]
-        ground_truth_depth=ground_truth_depth[ground_truth_depth!=0]
-        losses['depth'] =   (1 - pearson_corrcoef( ground_truth_depth, 1/(depth_pred+100)))
-
-    top_mask = top_mask.unsqueeze(0).repeat(3, 1, 1)
-    masked_im = im * top_mask
-
-    masked_curr_data_im = curr_data['im'] * top_mask
-
-    losses['im'] = 0.8 * l1_loss_v1(masked_im, masked_curr_data_im) + 0.2 * (1.0 - calc_ssim(masked_im, masked_curr_data_im))
-
-
-    variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
-
-
-    if not is_initial_timestep:
-        is_fg = (params['seg_colors'][:, 0] > 0.5).detach()
-        #print('perv', rendervar['means3D'].shape)
-        fg_pts = rendervar['means3D'][is_fg]
-        fg_rot = rendervar['rotations'][is_fg]
-        #print('fg_pts', fg_pts.shape)
-        rel_rot = quat_mult(fg_rot, variables["prev_inv_rot_fg"])
-        rot = build_rotation(rel_rot)
-        neighbor_pts = fg_pts[variables["neighbor_indices"]]
-        curr_offset = neighbor_pts - fg_pts[:, None]
-        curr_offset_in_prev_coord = (rot.transpose(2, 1)[:, None] @ curr_offset[:, :, :, None]).squeeze(-1)
-
-
-        losses['rigid'] = weighted_l2_loss_v2(curr_offset_in_prev_coord, variables["prev_offset"],
-                                              variables["neighbor_weight"])
-
-        losses['rot'] = weighted_l2_loss_v2(rel_rot[variables["neighbor_indices"]], rel_rot[:, None],
-                                            variables["neighbor_weight"])
-
-        curr_offset_mag = torch.sqrt((curr_offset ** 2).sum(-1) + 1e-20)
-        losses['iso'] = weighted_l2_loss_v1(curr_offset_mag, variables["neighbor_dist"], variables["neighbor_weight"])
-
-        losses['floor'] = torch.clamp(fg_pts[:, 1], min=0).mean()
-
-        bg_pts = rendervar['means3D'][~is_fg]
-        bg_rot = rendervar['rotations'][~is_fg]
-
-
-        losses['bg'] = l1_loss_v2(bg_pts, variables["init_bg_pts"]) + l1_loss_v2(bg_rot, variables["init_bg_rot"])
-        losses['soft_col_cons'] = l1_loss_v2(params['rgb_colors'], variables["prev_col"])
-
-    loss_weights = {'im': 0.1, 'rigid': 0.4, 'rot': 0.4, 'iso': 0.2, 'floor': 0.2, 'bg': 2.0, 'soft_col_cons': 0.01, 'depth':0.1}
-                    
-    loss = sum([loss_weights[k] * v for k, v in losses.items()])
-    seen = radius > 0
-    variables['max_2D_radius'][seen] = torch.max(radius[seen], variables['max_2D_radius'][seen])
-    variables['seen'] = seen
-    
-    return loss, variables
 
 
 def initialize_per_timestep(params, variables, optimizer):
@@ -167,12 +90,10 @@ def train(seq, exp, opt=None, pipe=None):
     scene = Scene(gaussians)
     gaussians.training_setup(opt)
     bg_color = [1, 1, 1] #if dataset.white_background else [0, 0, 0]
-    background = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
+    background = torch.tensor(bg_color, dtype=torch.float32).cuda()
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
     initialize_wandb(exp, seq)
-
-
     for t in reversed(range(111)):
         t=int(t)
         stat_dataset = None
@@ -183,20 +104,91 @@ def train(seq, exp, opt=None, pipe=None):
         num_iter_per_timestep = int(2.8e3) if is_initial_timestep else int(2.1e3)
         progress_bar = tqdm(range(int(num_iter_per_timestep)), desc=f"timestep {t}")
 
-
         for i in range(num_iter_per_timestep):
+            losses = {}
             if not viewpoint_stack:
               viewpoint_stack = scene.getTrainBatch()
    
             viewpoint_cam = viewpoint_stack.pop(randint(0, len(viewpoint_stack)-1))
-            curr_data=get_gt_batch(viewpoint_cam)
-            print(viewpoint_cam.keys())
+            curr_data=(viewpoint_cam)
 
+            H, W =256,  256#im.shape[1], im.shape[2]
+            top_mask = torch.zeros(H, W).cuda()
+            top_mask[:, :]=1
+            if 'antimask' in curr_data.keys():
+                antimask=curr_data['antimask'].cuda()
+                combined_mask = antimask
+                top_mask = combined_mask.type(torch.uint8)
+                ground_truth_depth = curr_data['gt_depth']
+                depth_pred = depth_pred *  top_mask
+                ground_truth_depth = ground_truth_depth * top_mask
+
+                depth_pred = depth_pred.squeeze(0)
+                depth_pred = depth_pred.reshape(-1, 1)
+                ground_truth_depth = ground_truth_depth.reshape(-1, 1)
+
+                depth_pred=depth_pred[depth_pred!=0]
+                ground_truth_depth=ground_truth_depth[ground_truth_depth!=0]
+                #losses['depth'] = (1 - pearson_corrcoef( ground_truth_depth, 1/(depth_pred+100)))
+
+
+            top_mask = top_mask.unsqueeze(0).repeat(3, 1, 1)
+            masked_im = im * top_mask
+
+            masked_curr_data_im = curr_data['im'] * top_mask
+            
             render_pkg = render(viewpoint_cam['cam'], gaussians, pipe, background)
+            feature_map, im, viewspace_point_tensor, visibility_filter, radii, depth_pred = render_pkg["feature_map"], render_pkg["render"], render_pkg["viewspace_points"], render_pkg["visibility_filter"], render_pkg["radii"], render_pkg["depth"]
 
 
-            loss, variables, losses = get_loss(render_pkg, curr_data, variables, is_initial_timestep)
+            losses['im'] = 0.8 * l1_loss_v1(masked_im, masked_curr_data_im) + 0.2 * (1.0 - calc_ssim(masked_im, masked_curr_data_im))
 
+
+
+            rendervar
+
+
+            variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
+
+
+            if not is_initial_timestep:
+                #is_fg = (params['seg_colors'][:, 0] > 0.5).detach()
+                #print('perv', rendervar['means3D'].shape)
+                fg_pts = rendervar['means3D'][is_fg]
+                fg_rot = rendervar['rotations'][is_fg]
+                #print('fg_pts', fg_pts.shape)
+                rel_rot = quat_mult(fg_rot, variables["prev_inv_rot_fg"])
+                rot = build_rotation(rel_rot)
+                neighbor_pts = fg_pts[variables["neighbor_indices"]]
+                curr_offset = neighbor_pts - fg_pts[:, None]
+                curr_offset_in_prev_coord = (rot.transpose(2, 1)[:, None] @ curr_offset[:, :, :, None]).squeeze(-1)
+
+
+                losses['rigid'] = weighted_l2_loss_v2(curr_offset_in_prev_coord, variables["prev_offset"],
+                                                      variables["neighbor_weight"])
+
+                losses['rot'] = weighted_l2_loss_v2(rel_rot[variables["neighbor_indices"]], rel_rot[:, None],
+                                                    variables["neighbor_weight"])
+
+                curr_offset_mag = torch.sqrt((curr_offset ** 2).sum(-1) + 1e-20)
+                losses['iso'] = weighted_l2_loss_v1(curr_offset_mag, variables["neighbor_dist"], variables["neighbor_weight"])
+
+                losses['floor'] = torch.clamp(fg_pts[:, 1], min=0).mean()
+
+                bg_pts = rendervar['means3D'][~is_fg]
+                bg_rot = rendervar['rotations'][~is_fg]
+
+
+                losses['bg'] = l1_loss_v2(bg_pts, variables["init_bg_pts"]) + l1_loss_v2(bg_rot, variables["init_bg_rot"])
+                losses['soft_col_cons'] = l1_loss_v2(params['rgb_colors'], variables["prev_col"])
+
+            loss_weights = {'im': 0.1, 'rigid': 0.4, 'rot': 0.4, 'iso': 0.2, 'floor': 0.2, 'bg': 2.0, 'soft_col_cons': 0.01, 'depth':0.1}
+                            
+            loss = sum([loss_weights[k] * v for k, v in losses.items()])
+            seen = radius > 0
+            variables['max_2D_radius'][seen] = torch.max(radius[seen], variables['max_2D_radius'][seen])
+            variables['seen'] = seen
+          
             loss.backward()
             for k, v in variables.items():
               try:
@@ -225,43 +217,6 @@ def train(seq, exp, opt=None, pipe=None):
             variables = initialize_post_first_timestep(params, variables, optimizer)
 
     save_params(output_params, seq, exp)
-
-    def densify_and_clone(self, grads, grad_threshold, scene_extent):
-        # Extract points that satisfy the gradient condition
-        selected_pts_mask = torch.where(torch.norm(grads, dim=-1) >= grad_threshold, True, False)
-        selected_pts_mask = torch.logical_and(selected_pts_mask,
-                                              torch.max(self.get_scaling, dim=1).values <= self.percent_dense*scene_extent)
-        
-        new_xyz = self._xyz[selected_pts_mask]
-        new_features_dc = self._features_dc[selected_pts_mask]
-        new_features_rest = self._features_rest[selected_pts_mask]
-        new_opacities = self._opacity[selected_pts_mask]
-        new_scaling = self._scaling[selected_pts_mask]
-        new_rotation = self._rotation[selected_pts_mask]
-        new_semantic_feature = self._semantic_feature[selected_pts_mask] 
-
-        self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_semantic_feature) 
-
-
-
-    if iteration < opt.densify_until_iter:
-        # Keep track of max radii in image-space for pruning
-        gaussians.max_radii2D[visibility_filter] = torch.max(gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
-        gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
-
-        if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
-            size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-            gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
-        
-        if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
-            gaussians.reset_opacity()
-            
-
-
-
-
-
-
 
 
 if __name__ == "__main__":
