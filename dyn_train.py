@@ -521,18 +521,14 @@ def train(seq, exp):
 
 if __name__ == "__main__":
     import argparse
-    parser = ArgumentParser(description="Training script parameters")
-    lp = ModelParams(parser)
-    op = OptimizationParams(parser)
-    pp = PipelineParams(parser)
-
+    parser = argparse.ArgumentParser(description="Run training and visualization for a sequence.")
     parser.add_argument('--exp_name', type=str, required=True, help='Name of the experiment')
     args = parser.parse_args()
 
     exp_name = args.exp_name
     #for sequence in ["basketball", "boxes", "football", "juggle", "softball", "tennis"]:
     for sequence in ["cmu_bike"]:
-        train(sequence, exp_name, )
+        train(sequence, exp_name)
         torch.cuda.empty_cache()
         from visualize import visualize
         visualize(sequence, exp_name)
