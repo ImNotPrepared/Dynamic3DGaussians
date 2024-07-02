@@ -8,12 +8,24 @@ from random import randint
 from tqdm import tqdm
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 from helpers import setup_camera, l1_loss_v1, l1_loss_v2, weighted_l2_loss_v1, weighted_l2_loss_v2, quat_mult, \
-    o3d_knn, params2rendervar, params2cpu, save_params
+    o3d_knn, params2cpu, save_params
 from external import calc_ssim, calc_psnr, build_rotation, densify, update_params_and_optimizer
 import cv2
 from torchmetrics.functional.regression import pearson_corrcoef
 import torchvision.transforms as transforms
+def params2rendervar(params, index=38312):
+    ## [org, new_params(person)]
+    rendervar = {
+        'means3D': params['means3D'],
+        'colors_precomp': params['rgb_colors'],
+        'rotations': torch.nn.functional.normalize(params['unnorm_rotations']),
+        'opacities': torch.sigmoid(params['logit_opacities']),
+        'scales': torch.exp(params['log_scales']),
+        'means2D': torch.zeros_like(params['means3D'], requires_grad=True, device="cuda") + 0,
+        'label': params['label']
 
+    }
+    return rendervar
 
 def get_dataset(t, md, seq, mode='stat_only'):
     dataset = []
@@ -102,9 +114,9 @@ def get_batch(todo_dataset, dataset):
 
 
     
-def initialize_params(seq, md):
+def initialize_params(seq, md, init_pt_path):
     # init_pt_cld_before_dense init_pt_cld
-    init_pt_cld = np.load(f"./data_ego/{seq}/init_correct.npz")["data"]
+    init_pt_cld = np.load(init_pt_path)["data"]
     #init_pt_cld = np.concatenate((init_pt_cld, init_pt_cld), axis=0)
     print(len(init_pt_cld))
     seg = init_pt_cld[:, 6]
@@ -125,7 +137,9 @@ def initialize_params(seq, md):
     params = {k: torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True)) for k, v in
               params.items()}
 
-
+    params['label']=  ((
+        torch.ones(len(params['means3D']), requires_grad=False, device="cuda")
+        ))
               
     cam_centers = np.linalg.inv(md['w2c'][0])[:, :3, 3]  # Get scene radius
     scene_radius = 1.1 * np.max(np.linalg.norm(cam_centers - np.mean(cam_centers, 0)[None], axis=-1))
@@ -152,7 +166,7 @@ def initialize_optimizer(params, variables):
             'logit_opacities': 0.05,
         'log_scales': 0.001,
     '''
-    param_groups = [{'params': [v], 'name': k, 'lr': lrs[k]} for k, v in params.items()]
+    param_groups = [{'params': [v], 'name': k, 'lr': lrs[k]} for k, v in params.items() if k in lrs.keys()]
     return torch.optim.Adam(param_groups, lr=0.0, eps=1e-15)
 
 
@@ -165,7 +179,7 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
 
     for curr_data in curr_datasss: 
 
-      im, radius, depth_pred, = Renderer(raster_settings=curr_data['cam'])(**rendervar)
+      im, radius, depth_pred, _ = Renderer(raster_settings=curr_data['cam'])(**rendervar)
 
       curr_id = curr_data['id']
       #print(params['cam_m'][curr_id], params['cam_c'][curr_id])
@@ -193,18 +207,18 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
       
       depth_pred = depth_pred *  top_mask
       ground_truth_depth = ground_truth_depth * top_mask
-
-      depth_pred = depth_pred.squeeze(0)
+      #losses['depth'] +=   l1_loss_v1(depth_pred, ground_truth_depth)
+      
       depth_pred = depth_pred.reshape(-1, 1)
       ground_truth_depth = ground_truth_depth.reshape(-1, 1)
-
-      depth_pred=depth_pred[depth_pred!=0]
-      ground_truth_depth=ground_truth_depth[ground_truth_depth!=0]
-
-      #print(depth_pred.shape,  top_mask.shape)
+      depth_pred = depth_pred.squeeze(0)
       #print(depth_pred.shape, ground_truth_depth.shape)
+
+      depth_pred=depth_pred[ground_truth_depth!=0]
+      ground_truth_depth=ground_truth_depth[ground_truth_depth!=0] 
       #  gt_depth: 1/zoe_depth(metric_depth) -> 1/real_depth; gasussian
-      losses['depth'] +=   (1 - pearson_corrcoef( ground_truth_depth, 1/(depth_pred+100)))
+      #print(ground_truth_depth.shape, depth_pred.shape)
+      losses['depth'] = (1 - pearson_corrcoef( ground_truth_depth, 1/(depth_pred+100)))
 
       #l1_loss_v1(ground_truth_depth, depth_pred)
 
@@ -220,8 +234,8 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
 
     variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
 
-    loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'depth': 0.0001,
-                    'soft_col_cons': 0.01}
+    loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'depth': 0.001,
+                    'soft_col_cons': 0.00}
                     
     loss = sum([loss_weights[k] * v for k, v in losses.items()])
     seen = radius > 0
@@ -352,7 +366,8 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400
             gt_depth = cv2.resize(gt_depth, (256, 256), interpolation=cv2.INTER_LINEAR)
 
             
-            im, _, depth = Renderer(raster_settings=cam)(**params2rendervar(params))
+            im, _, depth, _ = Renderer(raster_settings=cam)(**params2rendervar(params))
+            
             im=im.clip(0,1)
 
 
@@ -411,7 +426,7 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400
             gt_depth = cv2.resize(gt_depth, (256, 144), interpolation=cv2.INTER_CUBIC)
 
             
-            im, _, depth = Renderer(raster_settings=cam)(**params2rendervar(params))
+            im, _, depth, _ = Renderer(raster_settings=cam)(**params2rendervar(params))
             im=im.clip(0,1)
             
             # Process image
@@ -437,7 +452,7 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400
 
 def report_progress(params, data, i, progress_bar, every_i=100):
     if i % every_i == 0:
-        im, _, _, = Renderer(raster_settings=data['cam'])(**params2rendervar(params))
+        im, _, _, _ = Renderer(raster_settings=data['cam'])(**params2rendervar(params))
         curr_id = data['id']
         im = torch.exp(params['cam_m'][curr_id])[:, None, None] * im + params['cam_c'][curr_id][:, None, None]
         psnr = calc_psnr(im, data['im']).mean()
@@ -466,7 +481,11 @@ def train(seq, exp):
     #    return
     md = json.load(open(f"./data_ego/{seq}/train_meta.json", 'r'))  # metadata
     num_timesteps = len(md['fn'])
-    params, variables = initialize_params(seq, md)
+
+
+
+    init_path='/data3/zihanwa3/Capstone-DSR/Processing/duster_densify.npz'
+    params, variables = initialize_params(seq, md, init_path)
     optimizer = initialize_optimizer(params, variables)
     output_params = []
 
@@ -481,7 +500,7 @@ def train(seq, exp):
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
 
-        num_iter_per_timestep = int(2.1e6) if is_initial_timestep else 2
+        num_iter_per_timestep = int(2.1e4) if is_initial_timestep else 2
         progress_bar = tqdm(range(num_iter_per_timestep), desc=f"timestep {t}")
         for i in range(num_iter_per_timestep):
             curr_data = get_batch(todo_dataset, dataset)
@@ -489,8 +508,8 @@ def train(seq, exp):
             loss, variables, losses = get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=stat_dataset)
             loss.backward()
             with torch.no_grad():
-                #report_progress(params, dataset[0], i, progress_bar)
-                #report_stat_progress(params, curr_data, i, progress_bar,md)
+                report_progress(params, dataset[0], i, progress_bar)
+                report_stat_progress(params, curr_data, i, progress_bar,md)
                 if is_initial_timestep:
                     params, variables = densify(params, variables, optimizer, i)
                 assert ((params['means3D'].shape[0]==0) is False)

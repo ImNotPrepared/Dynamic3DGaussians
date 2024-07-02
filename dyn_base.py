@@ -3,6 +3,7 @@ import os
 import json
 import copy
 import numpy as np
+import torch.nn.functional as F
 from PIL import Image
 from random import randint
 from tqdm import tqdm
@@ -14,9 +15,6 @@ import cv2
 from torchmetrics.functional.regression import pearson_corrcoef
 import torchvision.transforms as transforms
 
-import torch.nn.functional as F
-
-#### [t, c, ...]\\
 def get_dataset(t, md, seq, mode='stat_only'):
     dataset = []
     t+=183
@@ -36,28 +34,58 @@ def get_dataset(t, md, seq, mode='stat_only'):
             mask_path=f'/ssd0/zihanwa3/duster_depth/{c}/{t}.npz'
             depth = torch.tensor(np.load(mask_path)['depth']).float().cuda()
             depth=1/(depth+100.)
-            dataset.append({'cam': cam, 'im': im, 'id': c, 'gt_depth':depth, 'vis': True})  
+            dataset.append({'cam': cam, 'im': im, 'id': c, 'gt_depth':depth, 'vis': True}) 
+
       return dataset
+
 def get_batch(todo_dataset, dataset):
     if not todo_dataset:
         todo_dataset = dataset.copy()
     curr_data = todo_dataset.pop(randint(0, len(todo_dataset) - 1))
     return curr_data
 
-
-def initialize_params(seq, md, exp):
+def initialize_params(seq, md, init_pt_path):
     # init_pt_cld_before_dense init_pt_cld
-    ckpt_path=f'./output/no-depth/{seq}/params.npz'
-    params = dict(np.load(ckpt_path, allow_pickle=True))
-    params = {k: torch.tensor(params[k]).cuda().float().requires_grad_(True) for k in params.keys()}
+    init_pt_cld = np.load(init_pt_path)["data"]
+    #init_pt_cld = np.concatenate((init_pt_cld, init_pt_cld), axis=0)
+    print(len(init_pt_cld))
+    seg = init_pt_cld[:, 6]
+    max_cams = 305
+    sq_dist, _ = o3d_knn(init_pt_cld[:, :3], 3)
+    mean3_sq_dist = sq_dist.mean(-1).clip(min=0.0000001)
+
+    scale_gaussian = depth_z / ((FX + FY)/2)
+    mean3_sq_dist = scale_gaussian**2
+
+
+    params = {
+        'means3D': init_pt_cld[:, :3],
+        'rgb_colors': init_pt_cld[:, 3:6], #*255,
+        'seg_colors': np.stack((seg, np.zeros_like(seg), 1 - seg), -1),
+        'unnorm_rotations': np.tile([1, 0, 0, 0], (seg.shape[0], 1)),
+        'logit_opacities': np.zeros((seg.shape[0], 1)),
+        'log_scales': np.tile(np.log(np.sqrt(mean3_sq_dist))[..., None], (1, 3)),
+        'cam_m': np.zeros((max_cams, 3)),
+        'cam_c': np.zeros((max_cams, 3)),
+    }
+    print(params['log_scales'].shape)
+    params = {k: torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True)) for k, v in
+              params.items()}
+
+    params['label']=  ((
+        torch.ones(len(params['means3D']), requires_grad=False, device="cuda")
+        ))
+              
     cam_centers = np.linalg.inv(md['w2c'][0])[:, :3, 3]  # Get scene radius
     scene_radius = 1.1 * np.max(np.linalg.norm(cam_centers - np.mean(cam_centers, 0)[None], axis=-1))
-
+    print('scene_radius', scene_radius)
     variables = {'max_2D_radius': torch.zeros(params['means3D'].shape[0]).cuda().float(),
                  'scene_radius': scene_radius,
                  'means2D_gradient_accum': torch.zeros(params['means3D'].shape[0]).cuda().float(),
                  'denom': torch.zeros(params['means3D'].shape[0]).cuda().float()}
-    return params, variables, scene_radius
+    return params, variables
+
+
 def report_stat_progress(params, t, i, progress_bar, md, every_i=2100):
     import matplotlib.pyplot as plt
 
@@ -176,6 +204,7 @@ def report_stat_progress(params, t, i, progress_bar, md, every_i=2100):
             wandb.log({
                 f"stat_combined_{c}_{t}": wandb.Image(combined, caption=f"Rendered image and depth at iteration {i}")
             })
+
 def params2rendervar(params, index=38312):
     ## [org, new_params(person)]
     rendervar = {
@@ -190,79 +219,11 @@ def params2rendervar(params, index=38312):
     }
     return rendervar
 
-def add_new_gaussians(params, variables, scene_radius):
-    '''
-    print(k)
-    means3D
-    rgb_colors
-    unnorm_rotations
-    logit_opacities
-    log_scales
-    '''
-    path='/data3/zihanwa3/Capstone-DSR/Processing/3D/aug_person.npz'
-    new_pt_cld = np.load(path)["data"]
-    print('dyn_len', len(new_pt_cld))
-    new_params = initialize_new_params(new_pt_cld)
-
-    
-    variables = {'max_2D_radius': torch.zeros(new_params['means3D'].shape[0]).cuda().float(),
-                 'scene_radius': scene_radius,
-                 'means2D_gradient_accum': torch.zeros(new_params['means3D'].shape[0]).cuda().float(),
-                 'denom': torch.zeros(new_params['means3D'].shape[0]).cuda().float()}
-    for k, v in new_params.items():
-      params_no_grad = params[k]#.requires_grad_(False)  # 使 params[k] 不需要梯度
-      if len(params_no_grad.shape) == 3:
-        params_no_grad=params_no_grad[0]
-      new_params[k] = torch.cat((params_no_grad, v), dim=0)
-
-
-    for k, v in new_params.items():
-        # Check if value is already a torch tensor
-        if not isinstance(v, torch.Tensor):
-            new_params[k] = torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True))
-        else:
-            new_params[k] = torch.nn.Parameter(v.cuda().float().contiguous().requires_grad_(True))
-
-    #### [org, new_params(person)]
-    index=38312
-    new_params['label']=  torch.cat((
-        torch.zeros(index, requires_grad=False, device="cuda"),
-        torch.ones(len(new_params['means3D'])-index, requires_grad=False, device="cuda")
-        ))
-
-    variables = {'max_2D_radius': torch.zeros(new_params['means3D'].shape[0]).cuda().float(),
-                 'scene_radius': scene_radius,
-                 'means2D_gradient_accum': torch.zeros(new_params['means3D'].shape[0]).cuda().float(),
-                 'denom': torch.zeros(new_params['means3D'].shape[0]).cuda().float()}
-    print('stat_len', len(params['means3D'][0]))
-    print('overall_len', len(new_params['means3D']))
-    return new_params, variables
-
-def initialize_new_params(new_pt_cld):
-    num_pts = new_pt_cld.shape[0]
-    means3D = new_pt_cld[:, :3] # [num_gaussians, 3]
-    unnorm_rots = np.tile([1, 0, 0, 0], (num_pts, 1)) # [num_gaussians, 4]
-    logit_opacities = torch.zeros((num_pts, 1), dtype=torch.float, device="cuda")
-    sq_dist, _ = o3d_knn(new_pt_cld[:, :3], 3)
-    mean3_sq_dist = sq_dist.mean(-1).clip(min=0.0000001)
-    seg = new_pt_cld[:, 6]  
-    params = {
-        'means3D': means3D,
-        'rgb_colors': new_pt_cld[:, 3:6],
-        'unnorm_rotations': unnorm_rots,
-        'seg_colors': np.stack((seg, np.zeros_like(seg), 1 - seg), -1),
-        'logit_opacities': logit_opacities,
-        'log_scales':  np.tile(np.log(np.sqrt(mean3_sq_dist))[..., None], (1, 3)),
-    }
-    params = {k: torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True)) for k, v in
-              params.items()}
-    return params
-
 def initialize_optimizer(params, variables):
     lrs = {
         'means3D': 0.0000014 * variables['scene_radius'], # 0000014
         'rgb_colors': 0.000028, ###0.0028 will fail
-        'unnorm_rotations': 0.0000001,
+        'unnorm_rotations': 0.00001,
         'seg_colors':0.0,
         'logit_opacities': 0.01,
         'log_scales': 0.005,
@@ -289,6 +250,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
     H, W =im.shape[1], im.shape[2]
     top_mask = torch.zeros((H, W), device=im.device)
     top_mask[:, :]=1
+
 
     combined_mask = top_mask
     top_mask = combined_mask.type(torch.uint8)
@@ -319,13 +281,11 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
 
     variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
     if not is_initial_timestep:
-        is_fg = params['label']==1
-        print(len(is_fg), 'fg_len')
+        is_fg = (params['seg_colors'][:, 0] > 0.5).detach()
         #print('perv', rendervar['means3D'].shape)
         fg_pts = rendervar['means3D'][is_fg]
         fg_rot = rendervar['rotations'][is_fg]
         #print('fg_pts', fg_pts.shape)
-        #print(fg_rot.shape, variables["prev_inv_rot_fg"].shape)
         rel_rot = quat_mult(fg_rot, variables["prev_inv_rot_fg"])
         rot = build_rotation(rel_rot)
         neighbor_pts = fg_pts[variables["neighbor_indices"]]
@@ -351,7 +311,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
         losses['bg'] = l1_loss_v2(bg_pts, variables["init_bg_pts"]) + l1_loss_v2(bg_rot, variables["init_bg_rot"])
         losses['soft_col_cons'] = l1_loss_v2(params['rgb_colors'], variables["prev_col"])
 
-    loss_weights = {'im': 0.1, 'rigid': 0.4, 'rot': 0.4, 'iso': 0.2, 'floor': 0.2, 'bg': 2.0, 'soft_col_cons': 0.01, 'depth':0.001}
+    loss_weights = {'im': 0.1, 'rigid': 0.4, 'rot': 0.4, 'iso': 0.2, 'floor': 0.2, 'bg': 2.0, 'soft_col_cons': 0.01, 'depth':0.1}
                     
     loss = sum([loss_weights[k] * v for k, v in losses.items()])
     seen = radius > 0
@@ -364,10 +324,11 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
 def initialize_per_timestep(params, variables, optimizer):
     pts = params['means3D']
     rot = torch.nn.functional.normalize(params['unnorm_rotations'])
+    
     new_pts = pts + (pts - variables["prev_pts"])
     new_rot = torch.nn.functional.normalize(rot + (rot - variables["prev_rot"]))
 
-    is_fg = params['label']==1
+    is_fg = params['seg_colors'][:, 0] > 0.5
     prev_inv_rot_fg = rot[is_fg]
     prev_inv_rot_fg[:, 1:] = -1 * prev_inv_rot_fg[:, 1:]
     fg_pts = pts[is_fg]
@@ -384,8 +345,7 @@ def initialize_per_timestep(params, variables, optimizer):
 
 
 def initialize_post_first_timestep(params, variables, optimizer, num_knn=20):
-    is_fg = params['label']==1
-    
+    is_fg = params['seg_colors'][:, 0] > 0.5
     init_fg_pts = params['means3D'][is_fg]
     init_bg_pts = params['means3D'][~is_fg]
     init_bg_rot = torch.nn.functional.normalize(params['unnorm_rotations'][~is_fg])
@@ -398,6 +358,7 @@ def initialize_post_first_timestep(params, variables, optimizer, num_knn=20):
 
     variables["init_bg_pts"] = init_bg_pts.detach()
     variables["init_bg_rot"] = init_bg_rot.detach()
+
     variables["prev_pts"] = params['means3D'].detach()
     variables["prev_rot"] = torch.nn.functional.normalize(params['unnorm_rotations']).detach()
     params_to_fix = ['logit_opacities', 'log_scales', 'cam_m', 'cam_c']
@@ -416,20 +377,21 @@ def initialize_wandb(exp_name, seq):
 
 
 def train(seq, exp):
-    #if os.path.exists(f"./output/{exp}/{seq}"):
-    #    print(f"Experiment '{exp}' for sequence '{seq}' already exists. Exiting.")
-    #    return
     md = json.load(open(f"./data_ego/{seq}/Dy_train_meta.json", 'r'))  # metadata
 
     num_timesteps = len(md['fn'])
-    params, variables, sriud = initialize_params(seq, md, exp)
 
-    params, variables =  add_new_gaussians(params, variables, sriud)
+
+    init_path='/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/duster_densify_with_person.npz'
+
+
+    params, variables = initialize_params(seq, md, init_path)
+
     optimizer = initialize_optimizer(params, variables)
     output_params = []
 
     initialize_wandb(exp, seq)
-    org_params=initialize_params(seq, md, exp)
+
 
     for t in reversed(range(111)):
         t=int(t)
@@ -439,20 +401,18 @@ def train(seq, exp):
         is_initial_timestep = (int(t) == 110)
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
-        num_iter_per_timestep = int(5.8e3) if is_initial_timestep else int(2.1e3)
+        num_iter_per_timestep = int(2.1e4) if is_initial_timestep else int(2.8e3)
         progress_bar = tqdm(range(int(num_iter_per_timestep)), desc=f"timestep {t}")
         for i in tqdm(range(num_iter_per_timestep), desc=f"timestep {t}"):
             curr_data = get_batch(todo_dataset, dataset)
 
             loss, variables, losses = get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=stat_dataset, org_params=None)
             loss.backward()
-            #variables['means2D'].grad[:38312, :] =  0
-
             with torch.no_grad():
                 #report_progress(params, dataset[0], i, progress_bar)
                 report_stat_progress(params, t, i, progress_bar, md)
-                #if is_initial_timestep:
-                #    params, variables = densify(params, variables, optimizer, i)
+                if is_initial_timestep:
+                    params, variables = densify(params, variables, optimizer, i)
                 assert ((params['means3D'].shape[0]==0) is False)
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
