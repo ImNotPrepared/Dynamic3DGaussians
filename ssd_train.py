@@ -114,7 +114,7 @@ def get_batch(todo_dataset, dataset):
 
 
     
-def initialize_params(seq, md, init_pt_path):
+def initialize_params(seq, md, init_pt_path, data_dict):
     # init_pt_cld_before_dense init_pt_cld
     init_pt_cld = np.load(init_pt_path)["data"]
     #init_pt_cld = np.concatenate((init_pt_cld, init_pt_cld), axis=0)
