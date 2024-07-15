@@ -180,11 +180,7 @@ def densify(params, variables, optimizer, i):
         #if (i >= 500) and (i % 100 == 0):
         if (i >= 500) and (i % 100 == 0):
             grads = variables['means2D_gradient_accum'] / variables['denom']
-            print(variables['means2D_gradient_accum'][:5])
             grads[grads.isnan()] = 0.0
-
-
-
 
             to_clone = torch.logical_and(grads >= grad_thresh, (
                         torch.max(torch.exp(params['log_scales']), dim=1).values <= 0.01 * variables['scene_radius']))
@@ -218,7 +214,7 @@ def densify(params, variables, optimizer, i):
             to_remove = torch.cat((to_split, torch.zeros(n * to_split.sum(), dtype=torch.bool, device="cuda")))
             params, variables = remove_points(to_remove, params, variables, optimizer)
             #print('3st',  params['means3D'].shape[0],  params['label'].shape[0])
-            remove_threshold = 0.25 if i == 5000 else 0.005
+            remove_threshold = 0.25 if i == 5000 else 0.005 #005
             to_remove = (torch.sigmoid(params['logit_opacities']) < remove_threshold).squeeze()
             if i >= 3000:
                 big_points_ws = torch.exp(params['log_scales']).max(dim=1).values > 0.1 * variables['scene_radius']

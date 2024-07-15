@@ -8,9 +8,10 @@ from random import randint
 from tqdm import tqdm
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 from helpers import setup_camera, l1_loss_v1, l1_loss_v2, weighted_l2_loss_v1, weighted_l2_loss_v2, quat_mult, \
-    o3d_knn, params2cpu, save_params
+    o3d_knn, params2cpu, save_params, save_params_progressively
 from external import calc_ssim, calc_psnr, build_rotation, densify, update_params_and_optimizer
 import cv2
+import torch.nn.functional as F
 from torchmetrics.functional.regression import pearson_corrcoef
 import torchvision.transforms as transforms
 def params2rendervar(params, index=38312):
@@ -36,7 +37,12 @@ def get_dataset(t, md, seq, mode='stat_only'):
 
     # Specify the directory containing the .jpg files   precise_reduced_im
                 # /ssd0/zihanwa3/data_ego/nice100 '/data3/zihanwa3/Capstone-DSR/Appendix/lalalal_new'# /data3/zihanwa3/Capstone-DSR/Appendix/nice10
-    directory = '/data3/zihanwa3/Capstone-DSR/Appendix/SR_7_pls'
+    dino_mask=True
+    if dino_mask:
+      directory = '/data3/zihanwa3/Capstone-DSR/Appendix/SR100'
+    
+    else:
+      directory = '/data3/zihanwa3/Capstone-DSR/Appendix/SR_7_pls'
     jpg_filenames = get_jpg_filenames(directory)
 
 
@@ -56,7 +62,10 @@ def get_dataset(t, md, seq, mode='stat_only'):
             k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
             cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
             fn = md['fn'][t][c] # mask_{fn.split('/')[0]}
-            mask_path=f"/ssd0/zihanwa3/data_ego/lalalal_newmask/{fn.split('/')[-1]}"
+            if dino_mask:
+              mask_path=f"/ssd0/zihanwa3/data_ego/lalalal_newmask/{fn.split('/')[-1]}"
+            else:
+              mask_path=f"/ssd0/zihanwa3/data_ego/SR_7_mask/{fn.split('/')[-1].replace('.jpg', '.png')}"
             mask = Image.open(mask_path).convert("L")
             transform = transforms.ToTensor()
             mask_tensor = transform(mask).squeeze(0)
@@ -67,15 +76,15 @@ def get_dataset(t, md, seq, mode='stat_only'):
 
             im = torch.rot90(im, k=1, dims=(1, 2))
 
-            mask_path=f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(t)}/depth_{c}.npz'
-            depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda()
-            depth = torch.rot90(depth, k=1, dims=(0, 1))
+            #mask_path=f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(t)}/depth_{c}.npz'
+            #depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda()
+            #depth = torch.rot90(depth, k=1, dims=(0, 1))
             #depth = torch.clamp(depth, min=epsilon)
-            depth=1/(depth+100.)
+            #depth=1/(depth+100.)
 
             #anti_mask_tensor=torch.rot90(anti_mask_tensor, k=1, dims=(0, 1))
-            dataset.append({'cam': cam, 'im': im, 'id': iiiindex, 'antimask': anti_mask_tensor, 'gt_depth':depth, 'vis': True})  
-
+            #dataset.append({'cam': cam, 'im': im, 'id': iiiindex, 'antimask': anti_mask_tensor, 'gt_depth':depth, 'vis': True})  
+            dataset.append({'cam': cam, 'im': im, 'id': iiiindex, 'antimask': anti_mask_tensor, 'vis': True})  
 
       for c in range(1400, 1404):
           h, w = md['hw'][c]
@@ -92,11 +101,14 @@ def get_dataset(t, md, seq, mode='stat_only'):
           #print(im.shape)
           ############################## First Frame Depth ##############################
           #  f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(cam_id)}/depth_0.npz'
-          mask_path=f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(c)-1399}/depth_0.npz'
-          depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda()
-          depth=1/(depth+100)
+
+
+          #mask_path=f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(c)-1399}/depth_0.npz'
+          #depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda()
+          #depth=1/(depth+100)
           #np.savez_compressed(, depth_map=new_depth)
-          dataset.append({'cam': cam, 'im': im, 'id': c-1400+100, 'gt_depth':depth, 'vis': True})  
+          ##dataset.append({'cam': cam, 'im': im, 'id': c-1400+100, 'gt_depth':depth, 'vis': True})  
+          dataset.append({'cam': cam, 'im': im, 'id': c-1400+100, 'vis': True})  
 
       return dataset
 
@@ -106,23 +118,60 @@ def get_batch(todo_dataset, dataset):
     if not todo_dataset:
         todo_dataset = dataset.copy()
     curr_data = todo_dataset.pop(randint(0, len(todo_dataset) - 1))
-
-
-
-    
     return [curr_data] #[curr_data] todo_dataset#
 
 
     
-def initialize_params(seq, md, init_pt_path, data_dict):
+def initialize_params(seq, md, init_pt_path):
     # init_pt_cld_before_dense init_pt_cld
+
+    size=256
+    init_pt_path=f'/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/duster_{size}_scene.npz'
+    init_pt_path='/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/good_.npz'
+
+    
     init_pt_cld = np.load(init_pt_path)["data"]
     #init_pt_cld = np.concatenate((init_pt_cld, init_pt_cld), axis=0)
     print(len(init_pt_cld))
     seg = init_pt_cld[:, 6]
     max_cams = 305
-    sq_dist, _ = o3d_knn(init_pt_cld[:, :3], 3)
-    mean3_sq_dist = sq_dist.mean(-1).clip(min=0.0000001)
+    intrinsics = [
+        [1764.094727, 1764.094727, 1920.0, 1080.0],
+        [1774.26709, 1774.26709, 1920.0, 1080.0],
+        [1764.426025, 1764.426025, 1920.0, 1080.0],
+        [1783.065308, 1783.065308, 1920.0, 1080.0]
+    ]
+    for _ in range(11-4):
+      new_intrinsics = list(np.array([671.24161057, 671.24161057, 703.5, 703.5]) / 1408 * size)
+      intrinsics.append(new_intrinsics)
+
+    mean3_sq_dist=[]
+    #for c in range(1,5):
+    #  mask_path=f'/data3/zihanwa3/Capstone-DSR/Processing/filled_complete/{size}/{int(c)-1}.npz'
+    for c in range(11):
+      mask_path = f'/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/adhoc_depth/{c+1}.npz'
+      depth = torch.tensor(np.load(mask_path)['depth']).float().cuda()
+      depth = depth.unsqueeze(0).unsqueeze(0)
+      if c<4:
+        depth_resized = F.interpolate(depth, size=(int(288*size/512), size), mode='bilinear', align_corners=False)
+      else:
+        depth_resized = F.interpolate(depth, size=(size, size), mode='bilinear', align_corners=False)
+      depth = depth_resized.squeeze(0).squeeze(0)
+      print(c)
+      scale_gaussian = 4.7*depth / ((intrinsics[c][0] + intrinsics[c][1])/2)
+      mean3_sq_dist.append((scale_gaussian**2).flatten().cpu().numpy()) # [H, W] * 4
+
+    mean3_sq_dist=np.concatenate(mean3_sq_dist)
+    #print(mean3_sq_dist.shape)
+    #if gaussian_distribution == "isotropic":
+    #  log_scales = torch.tile(torch.log(torch.sqrt(mean3_sq_dist))[..., None], (1, 1))
+    #elif gaussian_distribution == "anisotropic":
+    #log_scales = torch.tile(torch.log(torch.sqrt(mean3_sq_dist))[..., None], (1, 3))
+
+    #sq_dist, _ = o3d_knn(init_pt_cld[:, :3], 3)
+
+    #mean3_sq_dist = sq_dist.mean(-1).clip(min=0.0000001)
+    #print(mean3_sq_dist.shape)
     params = {
         'means3D': init_pt_cld[:, :3],
         'rgb_colors': init_pt_cld[:, 3:6], #*255,
@@ -156,8 +205,8 @@ def initialize_optimizer(params, variables):
         'means3D': 0.000014 *  variables['scene_radius'], # 0000014
         'rgb_colors': 0.00028, ###0.0028 will fail
         'seg_colors': 0.0,
-        'unnorm_rotations': 0.000000,
-        'logit_opacities': 0.01,
+        'unnorm_rotations': 0.0001,
+        'logit_opacities': 0.03,
         'log_scales': 0.005,
         'cam_m': 1e-5,
         'cam_c': 1e-5,
@@ -172,7 +221,6 @@ def initialize_optimizer(params, variables):
 
 def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=None):
     losses = {}
-    losses['depth'] = 0
     losses['im'] = 0
     rendervar = params2rendervar(params)
     rendervar['means2D'].retain_grad()
@@ -193,32 +241,32 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
       #c_data=curr_data['im']
 
       if 'antimask' in curr_data.keys():
-          mask_path='/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/masked_cmu_bike/triangular_mask.jpg'
-          default_mask= torch.tensor(cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE), device=im.device)
-          default_mask = default_mask>1e-5
+        mask_path='/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/masked_cmu_bike/triangular_mask.jpg'
+        default_mask= torch.tensor(cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE), device=im.device)
+        default_mask = default_mask>1e-5
 
-          antimask=curr_data['antimask'].to(params['cam_c'][curr_id].device)
-          combined_mask = ~torch.logical_or(default_mask, antimask)
-          top_mask = combined_mask.type(torch.uint8)
-          top_mask=torch.rot90(top_mask, k=1, dims=(0, 1))
+        antimask=curr_data['antimask'].to(params['cam_c'][curr_id].device)
+        combined_mask = ~torch.logical_or(default_mask, antimask)
+        top_mask = combined_mask.type(torch.uint8)
+        top_mask=torch.rot90(top_mask, k=1, dims=(0, 1))
+      '''
+            ground_truth_depth = curr_data['gt_depth']
 
-      ground_truth_depth = curr_data['gt_depth']
+            
+            depth_pred = depth_pred *  top_mask
+            ground_truth_depth = ground_truth_depth * top_mask
+            #losses['depth'] +=   l1_loss_v1(depth_pred, ground_truth_depth)
+            
+            depth_pred = depth_pred.reshape(-1, 1)
+            ground_truth_depth = ground_truth_depth.reshape(-1, 1)
+            depth_pred = depth_pred.squeeze(0)
+            #print(depth_pred.shape, ground_truth_depth.shape)
 
-      
-      depth_pred = depth_pred *  top_mask
-      ground_truth_depth = ground_truth_depth * top_mask
-      #losses['depth'] +=   l1_loss_v1(depth_pred, ground_truth_depth)
-      
-      depth_pred = depth_pred.reshape(-1, 1)
-      ground_truth_depth = ground_truth_depth.reshape(-1, 1)
-      depth_pred = depth_pred.squeeze(0)
-      #print(depth_pred.shape, ground_truth_depth.shape)
-
-      depth_pred=depth_pred[ground_truth_depth!=0]
-      ground_truth_depth=ground_truth_depth[ground_truth_depth!=0] 
-      #  gt_depth: 1/zoe_depth(metric_depth) -> 1/real_depth; gasussian
-      #print(ground_truth_depth.shape, depth_pred.shape)
-      losses['depth'] = (1 - pearson_corrcoef( ground_truth_depth, 1/(depth_pred+100)))
+            depth_pred=depth_pred[ground_truth_depth!=0]
+            ground_truth_depth=ground_truth_depth[ground_truth_depth!=0] 
+            #  gt_depth: 1/zoe_depth(metric_depth) -> 1/real_depth; gasussian
+            #print(ground_truth_depth.shape, depth_pred.shape)
+            losses['depth'] = (1 - pearson_corrcoef( ground_truth_depth, 1/(depth_pred+100)))'''
 
       #l1_loss_v1(ground_truth_depth, depth_pred)
 
@@ -229,12 +277,12 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
 
       losses['im'] += 0.8 * l1_loss_v1(masked_im, masked_curr_data_im) + 0.2 * (1.0 - calc_ssim(masked_im, masked_curr_data_im))
     losses['im'] /= len(curr_datasss)
-    losses['depth'] /= len(curr_datasss)
+    #losses['depth'] /= len(curr_datasss)
 
 
     variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
 
-    loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'depth': 0.001,
+    loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'depth': 0.000,
                     'soft_col_cons': 0.00}
                     
     loss = sum([loss_weights[k] * v for k, v in losses.items()])
@@ -482,12 +530,13 @@ def train(seq, exp):
     md = json.load(open(f"./data_ego/{seq}/train_meta.json", 'r'))  # metadata
     num_timesteps = len(md['fn'])
 
+    #/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/duster_512_scene.npz
 
-
-    init_path='/data3/zihanwa3/Capstone-DSR/Processing/duster_densify.npz'
+    init_path=False
     params, variables = initialize_params(seq, md, init_path)
     optimizer = initialize_optimizer(params, variables)
     output_params = []
+    
 
     initialize_wandb(exp, seq)
 
@@ -496,20 +545,22 @@ def train(seq, exp):
         dataset = get_dataset(t, md, seq, mode='ego_only')
         stat_dataset = None
         todo_dataset = []
+
         is_initial_timestep = (t == 0)
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
 
-        num_iter_per_timestep = int(2.1e4) if is_initial_timestep else 2
+        num_iter_per_timestep = int(1.7e4) if is_initial_timestep else 2
         progress_bar = tqdm(range(num_iter_per_timestep), desc=f"timestep {t}")
         for i in range(num_iter_per_timestep):
+            progressive_params = []
             curr_data = get_batch(todo_dataset, dataset)
 
             loss, variables, losses = get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=stat_dataset)
             loss.backward()
             with torch.no_grad():
                 report_progress(params, dataset[0], i, progress_bar)
-                report_stat_progress(params, curr_data, i, progress_bar,md)
+                #report_stat_progress(params, curr_data, i, progress_bar,md)
                 if is_initial_timestep:
                     params, variables = densify(params, variables, optimizer, i)
                 assert ((params['means3D'].shape[0]==0) is False)
@@ -517,6 +568,11 @@ def train(seq, exp):
                 optimizer.zero_grad(set_to_none=True)
             for key, value in losses.items():
               wandb.log({key: value.item(), "iteration": i})
+
+            progressive_iter=1e3
+            if i % progressive_iter == 0:
+              progressive_params.append(params2cpu(copy.deepcopy(params), is_initial_timestep))
+              save_params_progressively(progressive_params, seq, exp, i)
             
         progress_bar.close()
         output_params.append(params2cpu(params, is_initial_timestep))

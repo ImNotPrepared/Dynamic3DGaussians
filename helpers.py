@@ -4,7 +4,44 @@ import open3d as o3d
 import numpy as np
 from diff_gaussian_rasterization import GaussianRasterizationSettings as Camera
 
+C0 = 0.28209479177387814
+def rgb_to_spherical_harmonic(rgb):
+    return (rgb-0.5) / C0
 
+
+def spherical_harmonic_to_rgb(sh):
+    return sh*C0 + 0.5
+
+
+
+def save_ply_splat(path, means, scales, rotations, rgbs, opacities, normals=None):
+    if normals is None:
+        normals = np.zeros_like(means)
+
+
+    colors = rgb_to_spherical_harmonic(rgbs)
+
+    if scales.shape[1] == 1:
+        scales = np.tile(scales, (1, 3))
+
+    attrs = ['x', 'y', 'z',
+             'nx', 'ny', 'nz',
+             'f_dc_0', 'f_dc_1', 'f_dc_2',
+             'opacity',
+             'scale_0', 'scale_1', 'scale_2',
+             'rot_0', 'rot_1', 'rot_2', 'rot_3',]
+
+    dtype_full = [(attribute, 'f4') for attribute in attrs]
+    elements = np.empty(means.shape[0], dtype=dtype_full)
+    for lis in [means, normals, colors, opacities, scales, rotations]:
+      print(lis.shape)
+    attributes = np.concatenate((means, normals, colors, opacities, scales, rotations), axis=1)
+    elements[:] = list(map(tuple, attributes))
+    from plyfile import PlyData, PlyElement
+    el = PlyElement.describe(elements, 'vertex')
+    PlyData([el]).write(path)
+
+    print(f"Saved PLY format Splat to {path}")
 def setup_camera(w, h, k, w2c, near=0.01, far=100):
     fx, fy, cx, cy = k[0][0], k[1][1], k[0][2], k[1][2]
     w2c = torch.tensor(w2c).cuda().float()
@@ -103,3 +140,22 @@ def save_params(output_params, seq, exp):
     
     os.makedirs(f"./output/{exp}/{seq}", exist_ok=True)
     np.savez(f"./output/{exp}/{seq}/params", **to_save)
+
+def save_params_progressively(output_params, seq, exp, iteration):
+    to_save = {}
+    for k in output_params[0].keys():
+
+      to_save[k] = output_params[0][k]
+    os.makedirs(f"./output/{exp}/{seq}", exist_ok=True)
+    scene_data=params=output_params[0]
+
+    #print(scene_data.keys()) dict_keys(['means3D', 'colors_precomp', 'rotations', 'opacities', 'scales', 'means2D'])
+    path = f"./output/{exp}/{seq}/iter_{iteration}"+'points.ply'
+    means = params['means3D']
+    scales = params['log_scales']
+    rotations = params['unnorm_rotations']
+    rgbs = params['rgb_colors']
+    opacities = params['logit_opacities']
+    save_ply_splat(path, means, scales, rotations, rgbs, opacities)
+
+    np.savez(f"./output/{exp}/{seq}/params_iter_{iteration}", **to_save)

@@ -329,6 +329,8 @@ def visualize(seq, exp):
     rgbs = params['rgb_colors']
     opacities = params['logit_opacities']
     save_ply_splat(path, means[0], scales, rotations[0], rgbs[0], opacities)
+
+    
     file_path = os.path.join(base_data_path, seq, 'train_meta.json') 
 
     with open(file_path, 'r') as file:
