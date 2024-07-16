@@ -122,60 +122,20 @@ def get_batch(todo_dataset, dataset):
 
 
     
-def initialize_params(seq, md, init_pt_path):
+def initialize_params(seq, md, init_path):
     # init_pt_cld_before_dense init_pt_cld
-
-    size=256
-    init_pt_path=f'/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/duster_{size}_scene.npz'
-    init_pt_path='/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/good_.npz'
-
-
-    org_pt_path=f"./data_ego/{seq}/init_correct.npz"
-    org_pt_cld = np.load(org_pt_path)["data"]
-    init_pt_cld = np.load(init_pt_path)["data"]
-    fused_pt_cld = np.concatenate((init_pt_cld, org_pt_cld), axis=0)
-
+    init_pt_cld = np.load(f"./data_ego/{seq}/init_correct.npz")["data"]
     #init_pt_cld = np.concatenate((init_pt_cld, init_pt_cld), axis=0)
-    print(len(init_pt_cld), len(fused_pt_cld))
-    seg = fused_pt_cld[:, 6]
+    print(len(init_pt_cld))
+    seg = init_pt_cld[:, 6]
     max_cams = 305
-    intrinsics = [
-        [1764.094727, 1764.094727, 1920.0, 1080.0],
-        [1774.26709, 1774.26709, 1920.0, 1080.0],
-        [1764.426025, 1764.426025, 1920.0, 1080.0],
-        [1783.065308, 1783.065308, 1920.0, 1080.0]
-    ]
-    for _ in range(11-4):
-      new_intrinsics = list(np.array([671.24161057, 671.24161057, 703.5, 703.5]) / 1408 * size)
-      intrinsics.append(new_intrinsics)
-
-    mean3_sq_dist=[]
-    #for c in range(1,5):
-    #  mask_path=f'/data3/zihanwa3/Capstone-DSR/Processing/filled_complete/{size}/{int(c)-1}.npz'
-    for c in range(11):
-      mask_path = f'/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/adhoc_depth/{c+1}.npz'
-      depth = torch.tensor(np.load(mask_path)['depth']).float().cuda()
-      depth = depth.unsqueeze(0).unsqueeze(0)
-      if c<4:
-        depth_resized = F.interpolate(depth, size=(int(288*size/512), size), mode='bilinear', align_corners=False)
-      else:
-        depth_resized = F.interpolate(depth, size=(size, size), mode='bilinear', align_corners=False)
-      depth = depth_resized.squeeze(0).squeeze(0)
-      scale_gaussian = 4.7*depth / ((intrinsics[c][0] + intrinsics[c][1])/2)
-      mean3_sq_dist.append((scale_gaussian**2).flatten().cpu().numpy()) # [H, W] * 4
-
-    mean3_sq_dist=np.concatenate(mean3_sq_dist)
-    print(mean3_sq_dist.shape)
-
-    # Calculate mean distance using o3d_knn
-    knn_mean_dist = o3d_knn(org_pt_cld[:, :3], 3)[0].mean(-1).clip(min=0.0000001)
-    # Concatenate the mean3_sq_dist with knn_mean_dist
-    mean3_sq_dist = np.concatenate((mean3_sq_dist, knn_mean_dist))
-    print(mean3_sq_dist.shape)
-
+    sq_dist, _ = o3d_knn(init_pt_cld[:, :3], 3)
+    mean3_sq_dist = sq_dist.mean(-1).clip(min=0.0000001).clip(max=3.0)
+    
+    print(mean3_sq_dist.max(), mean3_sq_dist.mean(), mean3_sq_dist.var())
     params = {
-        'means3D': fused_pt_cld[:, :3],
-        'rgb_colors': fused_pt_cld[:, 3:6], #*255,
+        'means3D': init_pt_cld[:, :3],
+        'rgb_colors': init_pt_cld[:, 3:6], #*255,
         'seg_colors': np.stack((seg, np.zeros_like(seg), 1 - seg), -1),
         'unnorm_rotations': np.tile([1, 0, 0, 0], (seg.shape[0], 1)),
         'logit_opacities': np.zeros((seg.shape[0], 1)),
@@ -183,7 +143,6 @@ def initialize_params(seq, md, init_pt_path):
         'cam_m': np.zeros((max_cams, 3)),
         'cam_c': np.zeros((max_cams, 3)),
     }
-
     print(params['log_scales'].shape)
     params = {k: torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True)) for k, v in
               params.items()}
@@ -571,7 +530,7 @@ def train(seq, exp):
             for key, value in losses.items():
               wandb.log({key: value.item(), "iteration": i})
 
-            progressive_iter=1e4
+            progressive_iter=2e3
             if i % progressive_iter == 0:
               progressive_params.append(params2cpu(copy.deepcopy(params), is_initial_timestep))
               save_params_progressively(progressive_params, seq, exp, i)
