@@ -1,4 +1,3 @@
-
 import torch
 import numpy as np
 import pandas as pd
@@ -393,12 +392,14 @@ def visualize(seq, exp):
 
         images = []
         #294-111=183
-        for i, frame_index in enumerate(range(183, 294)):
+        reversed_range = list(range(111, -1, -3))
+
+        for i, frame_index in enumerate(reversed_range):
             print(frame_index,  cam_index)
             w2c, k = (np.array((json_file['w2c'])[frame_index][cam_index]), np.array(json_file['k'][frame_index][cam_index]))
             w2c = np.linalg.inv(w2c)
 
-            im, depth = render(w2c, k, scene_data[frame_index-254], w, h, near, far)
+            im, depth = render(w2c, k, scene_data[i], w, h, near, far)
             im=im.clip(0,1)
             first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
             im = np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255

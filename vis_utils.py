@@ -96,6 +96,24 @@ def load_scene_data(seq, exp, seg_as_col=False):
         scene_data.append(rendervar)
     return scene_data, is_fg
 
+def load_scene_data_knownpath(seq, exp, path, seg_as_col=False):
+    params = dict(np.load(path))
+    params = {k: torch.tensor(v).cuda().float() for k, v in params.items()}
+    is_fg = params['seg_colors'][:, 0] > 0.5
+    scene_data = []
+    for t in range(1):
+        rendervar = {
+            'means3D': params['means3D'],
+            'colors_precomp': params['rgb_colors'] if not seg_as_col else params['seg_colors'],
+            'rotations': torch.nn.functional.normalize(params['unnorm_rotations']),
+            'opacities': torch.sigmoid(params['logit_opacities']),
+            'scales': torch.exp(params['log_scales']),
+            'means2D': torch.zeros_like(params['means3D'], device="cuda")
+        }
+
+        scene_data.append(rendervar)
+    return scene_data, is_fg
+
 
 def make_lineset(all_pts, cols, num_lines):
     linesets = []

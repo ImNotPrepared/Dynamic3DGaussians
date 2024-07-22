@@ -289,6 +289,146 @@ def render_360_pc(point_cloud, image_size=256, output_path='./point_cloud.gif', 
     # Save the rendered images as a GIF
     imageio.mimsave(output_path, images, fps=5)
 
+def visualize_all(seq, exp):
+    import os
+    import time
+    import json
+    import numpy as np
+    import torch
+    import imageio
+    from PIL import Image
+    from pytorch3d.io import save_ply
+    from pytorch3d.renderer import PerspectiveCameras
+    start_time = time.time()
+
+    # Define base path
+    params_dir = os.path.join('./output', exp, seq)
+
+    params = {}
+    for filename in os.listdir(params_dir):
+        if filename.endswith(".npz"):
+            params_path = os.path.join(params_dir, filename)
+            params = dict(np.load(params_path, allow_pickle=True))
+            base_data_path = './data_ego'
+            base_visuals_path = f'./visuals/{exp}'+'/visuals'
+            base_output_path = './'
+
+            # Ensure directories exist
+            os.makedirs(base_visuals_path, exist_ok=True)
+            os.makedirs(os.path.join(base_visuals_path, filename, 'ego'), exist_ok=True)
+            os.makedirs(os.path.join(base_visuals_path, filename, 'sys'), exist_ok=True)
+            os.makedirs(os.path.join(base_visuals_path, filename, 'rot'), exist_ok=True)
+            os.makedirs(base_output_path, exist_ok=True)
+
+
+
+            print(params_path)
+            scene_data, is_fg = load_scene_data_knownpath(seq, exp, params_path)
+            scene_data=scene_data[0]
+            #print(scene_data.keys()) dict_keys(['means3D', 'colors_precomp', 'rotations', 'opacities', 'scales', 'means2D'])
+            path = base_visuals_path+'points.ply'
+            file_path = os.path.join(base_data_path, seq, 'train_meta.json') 
+
+            with open(file_path, 'r') as file:
+                json_file = json.load(file)
+
+            points_list = []
+            rbgs_list = []
+            frame_index, cam_index = 0, 0 
+            tto = []
+
+            for cam_index in range(1400):
+                h, w = json_file['hw'][cam_index]
+                def_pix = torch.tensor(
+                    np.stack(np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5, 1), -1).reshape(-1, 3)).cuda().float()
+                pix_ones = torch.ones(h * w, 1).cuda().float() 
+                image_size, radius = (h, w), 0.01
+                RENDER_MODE = 'color'
+                w2c, k = (np.array((json_file['w2c'])[frame_index][cam_index]), np.array(json_file['k'][frame_index][cam_index]))
+                w2c = np.linalg.inv(w2c)
+                camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
+                
+                im, depth = render(w2c, k, scene_data, w, h, near, far)
+                im=im.clip(0,1)
+                im = torch.rot90(im, k=-1, dims=(1, 2))
+                first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
+                #cv2.imwrite(os.path.join(base_visuals_path, 'ego', f'cam_{cam_index}.png'), first_)  
+
+                first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
+                first_ = cv2.resize(first_.astype(np.uint8), (256, 256), interpolation=cv2.INTER_LINEAR)
+
+                image = Image.fromarray((first_).astype(np.uint8))
+                tto.append(image)
+
+            imageio.mimsave(os.path.join(base_visuals_path, filename, 'sys', 'ego.gif'), tto, fps=21)
+
+            interval = 27
+            for cam_index in range(1400, 1404):
+                h, w = json_file['hw'][cam_index]
+                def_pix = torch.tensor(
+                    np.stack(np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5, 1), -1).reshape(-1, 3)).cuda().float()
+                pix_ones = torch.ones(h * w, 1).cuda().float()
+                image_size, radius = (h, w), 0.01
+                RENDER_MODE = 'color'
+                w2c, k = (np.array((json_file['w2c'])[0][cam_index]), np.array(json_file['k'][0][cam_index]))
+                w2c = np.linalg.inv(w2c)
+                camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
+
+                im, depth = render(w2c, k, scene_data, w, h, near, far)
+                print(depth.max(),depth.min(),depth.shape)
+                np.savez(f'/data3/zihanwa3/Capstone-DSR/Processing/toy_exp/gaussian_depth/cam_{cam_index-1399}', depth=depth.detach().cpu())
+                
+                
+                im=im.clip(0,1)
+                new_width, new_height = 256, 144  # desired dimensions
+                im=im.detach().cpu().permute(1, 2, 0).numpy()
+                im = cv2.resize(im, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+
+                first_ = np.array(im[:, :, ::-1]) * 255
+                cv2.imwrite(os.path.join(base_visuals_path, filename, 'sys', f'cam_{cam_index}.png'), first_)
+                
+                first_ = np.array(depth.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
+                cv2.imwrite(os.path.join(base_visuals_path, filename,'sys', f'depth_{cam_index}.png'), first_)
+
+                poses = render_wander_path(w2c, k)
+
+                tto = []
+                for i, pose in enumerate(poses):
+                    camera = PerspectiveCameras(device="cuda", R=pose[None, ...], K=k[None, ...])
+                    im, _ = render(pose, k, scene_data, w, h, near, far)
+                    im = np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
+                    image = Image.fromarray((im).astype(np.uint8))
+                    tto.append(image)
+                imageio.mimsave(os.path.join(base_visuals_path,filename, 'sys', f'{cam_index-1399}_aaa.gif'), tto, fps=10)
+              
+                num_frames = 20
+                angles = torch.linspace(0, 2 * np.pi, num_frames)
+
+                images = []
+                for i, angle in enumerate(angles):
+                    cos_a, sin_a = torch.cos(angle), torch.sin(angle)
+                    rotation_matrix = torch.tensor([
+                        [cos_a, 0, sin_a, 0],
+                        [0, 1, 0, 0],
+                        [-sin_a, 0, cos_a, 0],
+                        [0, 0, 0, 1]
+                    ], device="cuda").unsqueeze(0)
+
+
+
+                    camera_rotation = rotation_matrix.cpu() @ w2c[None, ...]
+                    im, depth = render(camera_rotation[0], k, scene_data, w, h, near, far)
+                    im=im.clip(0,1)
+                    first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
+                    im = np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
+                    new_width, new_height = 256, 144  # desired dimensions
+                    im = cv2.resize(im, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+                    image = Image.fromarray((im).astype(np.uint8))
+
+                    cv2.imwrite(os.path.join(base_visuals_path, filename,'rot', f'cam_{angle}.png'), first_)
+                    images.append(np.array(image))
+                imageio.mimsave(os.path.join(base_visuals_path, filename,'rot', f'cam_{cam_index}.gif'), images, fps=5)
+
 def visualize(seq, exp):
     import os
     import time
@@ -394,11 +534,6 @@ def visualize(seq, exp):
         first_ = np.array(depth.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
         cv2.imwrite(os.path.join(base_visuals_path, 'sys', f'depth_{cam_index}.png'), first_)
 
-        #pointclouds, pts, cols = rgbd2pcd(im, depth, w2c, k, def_pix, pix_ones, show_depth=(RENDER_MODE == 'depth'))
-        #point_cloud = Pointclouds(points=[pts], features=[cols]).to('cuda')
-        #render_360_pc(point_cloud, image_size=(144, 256), output_path=os.path.join(base_output_path, 'point_cloud.gif'), device='cuda')
-        #points_list.append(pts)
-        #rbgs_list.append(cols)
         poses = render_wander_path(w2c, k)
 
         tto = []
@@ -438,20 +573,6 @@ def visualize(seq, exp):
             images.append(np.array(image))
         imageio.mimsave(os.path.join(base_visuals_path, 'rot', f'cam_{cam_index}.gif'), images, fps=5)
 
-    #points = torch.cat(points_list, dim=0)
-    #rgb = torch.cat(rbgs_list, dim=0)
-    #rgb = rgb.float()
-    #point_cloud = Pointclouds(points=[points], features=[rgb]).to('cuda')
-    #render_360_pc(point_cloud, image_size=(144, 256), output_path=os.path.join(base_output_path, 'point_cloud.gif'), device='cuda')
-
-    #from plyfile import PlyData, PlyElement
-    #storePly(os.path.join(base_output_path, "final_pt_cld.ply"), points, rgb)
-    #data = np.zeros((len(points), 7))
-    #data[:, :3], data[:, 3:6] = points, rgb
-    #data[:, 6] = np.ones((len(points)))
-    
-    #np.savez(os.path.join(base_output_path, "final_pt_cld.npz"), data=data)
-    #print(f'Saved {len(data)}!')
 
 def storePly(path, xyz, rgb):
     # Define the dtype for the structured array
@@ -478,4 +599,4 @@ if __name__ == "__main__":
     sequence = 'cmu_bike'
     exp_name = sys.argv[1]
     
-    visualize(sequence, exp_name)
+    visualize_all(sequence, exp_name)

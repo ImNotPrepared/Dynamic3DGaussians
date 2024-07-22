@@ -20,6 +20,7 @@ import torch
 import torch.nn.functional as func
 from torch.autograd import Variable
 from math import exp
+import numpy as np 
 
 
 def build_rotation(q):
@@ -172,6 +173,38 @@ def inverse_sigmoid(x):
     return torch.log(x / (1 - x))
 
 
+import open3d as o3d
+def o3d_knn_compact_gaussians_with_mask(pts, num_knn, num_compact):
+    indices = []
+    sq_dists = []
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(np.ascontiguousarray(pts, np.float64))
+    pcd_tree = o3d.geometry.KDTreeFlann(pcd)
+    
+    for p in pcd.points:
+        [_, i, d] = pcd_tree.search_knn_vector_3d(p, num_knn + 1)
+        indices.append(i[1:])  # Skip the first index which is the point itself
+        sq_dists.append(d[1:])  # Skip the first distance which is zero
+
+    # Convert to numpy arrays
+    sq_dists = np.array(sq_dists)
+    indices = np.array(indices)
+
+    # Sum of squared distances
+    sum_sq_dists = sq_dists.sum(axis=1)
+
+    # Get the indices of the 30,000 most compact points
+    #num_compact=min(num_compact,  30,0000)
+    mask = sum_sq_dists >= sum_sq_dists.mean()+10*sum_sq_dists.var()# = np.argsort(sum_sq_dists)[:num_compact]
+
+    # Create the mask
+    #mask = np.zeros(len(pts), dtype=bool)
+    #mask[most_compact_indices] = True
+    mask = torch.tensor(mask)
+
+    return sq_dists, indices, mask
+
+
 def densify(params, variables, optimizer, i):
     #if i <= 5000:
     if i <= 5000:
@@ -213,9 +246,15 @@ def densify(params, variables, optimizer, i):
             variables['max_2D_radius'] = torch.zeros(num_pts, device="cuda")
             to_remove = torch.cat((to_split, torch.zeros(n * to_split.sum(), dtype=torch.bool, device="cuda")))
             params, variables = remove_points(to_remove, params, variables, optimizer)
-            #print('3st',  params['means3D'].shape[0],  params['label'].shape[0])
-            remove_threshold = 0.25 if i == 5000 else 0.005 #005
+            #_, _, mask= o3d_knn_compact_gaussians_with_mask(params['means3D'].detach().cpu().numpy(), 20, int(0.99*len(params['means3D'].detach().cpu().numpy())))
+            
+
+            remove_threshold = 0.5 if i == 5000 else 0.001 #005
             to_remove = (torch.sigmoid(params['logit_opacities']) < remove_threshold).squeeze()
+
+
+            #mask = mask.to(to_remove.device)
+            #to_remove = torch.logical_or(to_remove, mask)
             if i >= 3000:
                 big_points_ws = torch.exp(params['log_scales']).max(dim=1).values > 0.1 * variables['scene_radius']
                 to_remove = torch.logical_or(to_remove, big_points_ws)
@@ -229,9 +268,6 @@ def densify(params, variables, optimizer, i):
             params = update_params_and_optimizer(new_params, params, optimizer)
 
     return params, variables
-
-
-
 
 '''{"render": rendered_image,
             "viewspace_points": screenspace_points,
