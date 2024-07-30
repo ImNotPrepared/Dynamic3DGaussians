@@ -249,13 +249,15 @@ def initialize_new_params(new_pt_cld):
     sq_dist, _ = o3d_knn(new_pt_cld[:, :3], 3)
     mean3_sq_dist = sq_dist.mean(-1).clip(min=0.0000001)
     seg = np.ones((num_pts))
+
+
     params = {
         'means3D': means3D,
-        'rgb_colors': new_pt_cld[:, 3:6],
+        'rgb_colors': new_pt_cld[:, 3:6], # fixed
         'unnorm_rotations': unnorm_rots,
         'seg_colors': np.stack((seg, np.zeros_like(seg), 1 - seg), -1),
-        'logit_opacities': logit_opacities,
-        'log_scales':  np.tile(np.log(np.sqrt(mean3_sq_dist))[..., None], (1, 3)),
+        'logit_opacities': logit_opacities, # fixed
+        'log_scales':  np.tile(np.log(np.sqrt(mean3_sq_dist))[..., None], (1, 3)), # fixed
     }
     params = {k: torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True)) for k, v in
               params.items()}
@@ -439,14 +441,15 @@ def train(seq, exp):
     org_params=initialize_params(seq, md, exp)
 
     reversed_range = list(range(111, -1, -3))
+    reversed_range = [111, 72]
+
     for t in reversed_range:
         t=int(t)
         dataset = get_dataset(t, md, seq, mode='ego_only')
         stat_dataset = None
         todo_dataset = []
-        is_initial_timestep = (int(t) == 111)
-        if not is_initial_timestep:
-            params, variables = initialize_per_timestep(params, variables, optimizer)
+        is_initial_timestep = 1
+
         num_iter_per_timestep = int(6.3) if is_initial_timestep else int(2.1)
         progress_bar = tqdm(range(int(num_iter_per_timestep)), desc=f"timestep {t}")
         for i in tqdm(range(num_iter_per_timestep), desc=f"timestep {t}"):
@@ -457,8 +460,6 @@ def train(seq, exp):
             #variables['means2D'].grad[:38312, :] =  0
 
             with torch.no_grad():
-                #report_progress(params, dataset[0], i, progress_bar)
-                report_stat_progress(params, t, i, progress_bar, md)
                 #if is_initial_timestep:
                 #    params, variables = densify(params, variables, optimizer, i)
                 assert ((params['means3D'].shape[0]==0) is False)

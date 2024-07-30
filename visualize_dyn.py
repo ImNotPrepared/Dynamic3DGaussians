@@ -28,6 +28,66 @@ near, far = 0.01, 50.0
 view_scale = 1
 
 fps = 10
+
+import numpy as np
+from scipy.spatial.transform import Rotation as R
+
+# Function to perform spherical linear interpolation (slerp)
+def slerp(p0, p1, t):
+    omega = np.arccos(np.dot(p0 / np.linalg.norm(p0), p1 / np.linalg.norm(p1)))
+    so = np.sin(omega)
+    return np.sin((1.0 - t) * omega) / so * p0 + np.sin(t * omega) / so * p1
+
+# Function to interpolate between two cameras
+def interpolate_between_two_cameras(w2c_start, w2c_end, k_start, k_end, t):
+    # Interpolate rotation (convert to quaternions)
+    quat_start = R.from_matrix(w2c_start[:3, :3]).as_quat()
+    quat_end = R.from_matrix(w2c_end[:3, :3]).as_quat()
+    interpolated_quat = slerp(quat_start, quat_end, t)
+    interpolated_rot = R.from_quat(interpolated_quat).as_matrix()
+
+    # Interpolate translation
+    translation_start = w2c_start[:3, 3]
+    translation_end = w2c_end[:3, 3]
+    interpolated_translation = translation_start * (1 - t) + translation_end * t
+
+    # Combine rotation and translation
+    interpolated_w2c = np.eye(4)
+    interpolated_w2c[:3, :3] = interpolated_rot
+    interpolated_w2c[:3, 3] = interpolated_translation
+
+    # Interpolate intrinsics
+    interpolated_intrinsics = k_start * (1 - t) + k_end * t
+
+    return interpolated_w2c, interpolated_intrinsics
+
+# Function to interpolate between a list of cameras
+def interpolate_cameras(json_file, cam_indices, frame_index=0):
+    all_interpolated_cameras = []
+
+    for i in range(len(cam_indices) - 1):
+        start_cam_index = cam_indices[i]
+        end_cam_index = cam_indices[i + 1]
+
+        #(np.array((json_file['w2c'])[frame_index][cam_index])
+
+        # Get camera parameters
+        print(start_cam_index)
+        w2c_start = np.array(json_file['w2c'][frame_index][start_cam_index])
+        w2c_end = np.array(json_file['w2c'][frame_index][end_cam_index])
+        k_start = np.array(json_file['k'][frame_index][start_cam_index])
+        k_end = np.array(json_file['k'][frame_index][end_cam_index])
+
+        # Interpolate between the two cameras with t=0.5 for midpoint
+        interpolated_w2c, interpolated_intrinsics = interpolate_between_two_cameras(
+            w2c_start, w2c_end, k_start, k_end, 0.5
+        )
+
+        all_interpolated_cameras.append((interpolated_w2c, interpolated_intrinsics))
+
+    return all_interpolated_cameras
+
+
 def render_wander_path(c2w):
   """Rendering circular path."""
   hwf = c2w[:, 4:5]
@@ -366,6 +426,49 @@ def visualize(seq, exp):
     scene_data, is_fg = load_scene_data(seq, exp)
 
     md=json_file
+    # Example usage
+    cam_indices = [1, 2, 3, 4, 1]
+    reversed_range = list(range(111, -1, -3))
+    #for i, frame_index in enumerate(reversed_range):
+    interpolated_cameras = interpolate_cameras(json_file, cam_indices)
+      
+    for cam_index, (w2c, k) in enumerate(interpolated_cameras):
+        h, w = md['hw'][3]
+        def_pix = torch.tensor(
+            np.stack(np.meshgrid(np.arange(w) + 0.5, np.arange(h) + 0.5, 1), -1).reshape(-1, 3)).cuda().float()
+        pix_ones = torch.ones(h * w, 1).cuda().float()
+        image_size, radius = (h, w), 0.01
+        RENDER_MODE = 'color'
+        im, depth = render(w2c, k, scene_data[0], w, h, near, far)
+        #np.savez(f'/data3/zihanwa3/Capstone-DSR/Processing/toy_exp/gaussian_depth/cam_{cam_index-1399}', depth=depth.detach().cpu())
+        im=im.clip(0,1)
+        new_width, new_height = 256, 144  # desired dimensions
+        im=im.detach().cpu().permute(1, 2, 0).numpy()
+        im = cv2.resize(im, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+
+        images = []
+        #294-111=183
+        reversed_range = list(range(111, -1, -3))
+        w2c = np.linalg.inv(w2c)
+
+        for i, frame_index in enumerate(reversed_range):
+            #w2c, k = (np.array((json_file['w2c'])[frame_index][cam_index]), np.array(json_file['k'][frame_index][cam_index]))
+            
+            im, depth = render(w2c, k, scene_data[i], w, h, near, far)
+            im=im.clip(0,1)
+            first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
+            im = np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
+            new_width, new_height = 256, 144  # desired dimensions
+            im = cv2.resize(im, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
+            image = Image.fromarray((im).astype(np.uint8))
+
+            #cv2.imwrite(os.path.join(base_visuals_path, 'rot', f'cam_{angle}.png'), first_)
+            images.append(np.array(image))
+        imageio.mimsave(os.path.join(base_visuals_path, 'ego', f'inter_{cam_index}.gif'), images, fps=5)
+
+      
+
+
     for cam_index in range(1,5):
         h, w = md['hw'][cam_index]
         def_pix = torch.tensor(
@@ -375,7 +478,6 @@ def visualize(seq, exp):
         RENDER_MODE = 'color'
         w2c, k = (np.array((json_file['w2c'])[0][cam_index]), np.array(json_file['k'][0][cam_index]))
         w2c = np.linalg.inv(w2c)
-        camera = PerspectiveCameras(device="cuda", R=w2c[None, ...], K=k[None, ...])
 
         im, depth = render(w2c, k, scene_data[0], w, h, near, far)
         #np.savez(f'/data3/zihanwa3/Capstone-DSR/Processing/toy_exp/gaussian_depth/cam_{cam_index-1399}', depth=depth.detach().cpu())
@@ -430,6 +532,8 @@ def storePly(path, xyz, rgb):
     vertex_element = PlyElement.describe(elements, 'vertex')
     ply_data = PlyData([vertex_element])
     ply_data.write(path)
+
+
 
 
 if __name__ == "__main__":

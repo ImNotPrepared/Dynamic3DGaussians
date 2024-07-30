@@ -55,6 +55,8 @@ def setup_camera(w, h, k, w2c, near=0.01, far=100):
     cam = Camera(
         image_height=h,
         image_width=w,
+        c_x=cx,
+        c_y=cy,
         tanfovx=w / (2 * fx),
         tanfovy=h / (2 * fy),
         bg=torch.tensor([0, 0, 0], dtype=torch.float32, device="cuda"),

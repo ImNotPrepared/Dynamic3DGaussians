@@ -7,6 +7,8 @@ from PIL import Image
 from random import randint
 from tqdm import tqdm
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
+
+from gsplat.rendering import rasterization_inria_wrapper
 from helpers import setup_camera, l1_loss_v1, l1_loss_v2, weighted_l2_loss_v1, weighted_l2_loss_v2, quat_mult, \
     o3d_knn, params2cpu, save_params, save_params_progressively
 from external import calc_ssim, calc_psnr, build_rotation, densify, update_params_and_optimizer
@@ -14,6 +16,7 @@ import cv2
 import torch.nn.functional as F
 from torchmetrics.functional.regression import pearson_corrcoef
 import torchvision.transforms as transforms
+
 def params2rendervar(params, index=38312):
     ## [org, new_params(person)]
     rendervar = {
@@ -102,9 +105,9 @@ def get_dataset(t, md, seq, mode='stat_only'):
           ############################## First Frame Depth #############################
 
 
-          '''mask_path=f'/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/patched_stat_imgs/adhoc_depth/{c-1399}.npz'
+          mask_path=f'/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/patched_stat_imgs/adhoc_depth/{c-1399}.npz'
           depth = torch.tensor(np.load(mask_path)['depth']).float().cuda()
-          depth=1/(depth+100)'''
+          depth=1/(depth+100)
           #np.savez_compressed(, depth_map=new_depth)
           #dataset.append({'cam': cam, 'im': im, 'id': c-1400+100, 'gt_depth':depth, 'vis': True})  
           dataset.append({'cam': cam, 'im': im, 'id': c-1400+100, 'vis': True})  
@@ -125,7 +128,7 @@ def initialize_params(seq, md, init_pt_path):
     # init_pt_cld_before_dense init_pt_cld
 
     size=512
-    init_type='fused'
+    init_type='dust'
     #init_pt_path=f'/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/duster_{size}_scene.npz'
     #init_pt_path='/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/good_.npz'
     if init_type=='dust':
@@ -216,8 +219,8 @@ def initialize_optimizer(params, variables):
         'means3D': 0.000014 *  variables['scene_radius'], # 0000014
         'rgb_colors': 0.00028, ###0.0028 will fail
         'seg_colors': 0.0,
-        'unnorm_rotations': 0.001,
-        'logit_opacities': 0.01,
+        'unnorm_rotations': 0.000,
+        'logit_opacities': 0.02,
         'log_scales': 0.005,
         'cam_m': 1e-5,
         'cam_c': 1e-5,
@@ -236,6 +239,19 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
     rendervar = params2rendervar(params)
     rendervar['means2D'].retain_grad()
 
+
+    def rgb_to_grayscale(tensor):
+        # Ensure the input tensor is of shape (N, C, H, W)
+        
+        # Extract the R, G, B channels
+        r, g, b = tensor[0, :, :], tensor[1, :, :], tensor[2, :, :]
+
+        # Use the luminosity method to convert to grayscale
+        gray_tensor = 0.2989 * r + 0.5870 * g + 0.1140 * b
+
+        return gray_tensor.unsqueeze(0)
+
+
     for curr_data in curr_datasss: 
 
       im, radius, depth_pred, _ = Renderer(raster_settings=curr_data['cam'])(**rendervar)
@@ -247,12 +263,16 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
       #print(im.max(),im.min())
       #print('-'*100)
       H, W =im.shape[1], im.shape[2]
+
       top_mask = torch.zeros((H, W), device=im.device)
       top_mask[:, :]=1 
       top_mask = top_mask.unsqueeze(0).repeat(3, 1, 1)
       masked_im = im * top_mask
-
       masked_curr_data_im = curr_data['im'] * top_mask
+
+      #if H == W:
+      #  masked_im=rgb_to_grayscale(masked_im)
+      #  masked_curr_data_im=rgb_to_grayscale(masked_curr_data_im)
 
       losses['im'] += 0.8 * l1_loss_v1(masked_im, masked_curr_data_im) + 0.2 * (1.0 - calc_ssim(masked_im, masked_curr_data_im))
     losses['im'] /= len(curr_datasss)

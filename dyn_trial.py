@@ -24,7 +24,6 @@ def initialize_wandb(exp_name, seq):
         "sequence": seq,
     })
 
-
 def initialize_per_timestep(params, variables, optimizer):
     pts = params['means3D']
     rot = torch.nn.functional.normalize(params['unnorm_rotations'])
@@ -45,30 +44,6 @@ def initialize_per_timestep(params, variables, optimizer):
     params = update_params_and_optimizer(new_params, params, optimizer)
 
     return params, variables
-
-
-def initialize_post_first_timestep(gaussians, variables, optimizer, num_knn=20):
-    is_fg = torch.ones(len(gaussians.get_xyz))#gaussians.get_seg[:, 0] > 0.5
-    init_fg_pts = gaussians.get_xyz[is_fg]
-    init_bg_pts = gaussians.get_xyz[~is_fg]
-
-    init_bg_rot = torch.nn.functional.normalize(gaussians.get_rotation[~is_fg])
-    neighbor_sq_dist, neighbor_indices = o3d_knn(init_fg_pts.detach().cpu().numpy(), num_knn)
-    neighbor_weight = np.exp(-2000 * neighbor_sq_dist)
-    neighbor_dist = np.sqrt(neighbor_sq_dist)
-    variables["neighbor_indices"] = torch.tensor(neighbor_indices).cuda().long().contiguous()
-    variables["neighbor_weight"] = torch.tensor(neighbor_weight).cuda().float().contiguous()
-    variables["neighbor_dist"] = torch.tensor(neighbor_dist).cuda().float().contiguous()
-
-    variables["init_bg_pts"] = init_bg_pts.detach()
-    variables["init_bg_rot"] = init_bg_rot.detach()
-    variables["prev_pts"] = gaussians.get_xyz.detach()
-    variables["prev_rot"] = torch.nn.functional.normalize(gaussians.get_rotation).detach()
-    params_to_fix = ['logit_opacities', 'log_scales', 'cam_m', 'cam_c']
-    for param_group in optimizer.param_groups:
-        if param_group["name"] in params_to_fix:
-            param_group['lr'] = 0.0
-    return variables
 
 def gaussians2params(gaussians):
     params = {
@@ -117,17 +92,7 @@ def train(seq, exp, opt=None, pipe=None):
             masked_im = im * mask
 
 
-            ground_truth_depth = viewpoint_cam.depth.cuda()
-            depth_pred = F.interpolate(depth_pred, size=(144, 256), mode='bilinear', align_corners=False) #*  top_mask
-            ground_truth_depth = ground_truth_depth #* top_mask
-            depth_pred = depth_pred.squeeze(0)
-            depth_pred = depth_pred.reshape(-1, 1)
-            ground_truth_depth = ground_truth_depth.reshape(-1, 1)
-            depth_pred=depth_pred[depth_pred!=0]
-            ground_truth_depth=ground_truth_depth[ground_truth_depth!=0]
-            losses['depth'] =   (1 - pearson_corrcoef( ground_truth_depth, 1/(depth_pred+100)))
 
-            #top_mask = top_mask.unsqueeze(0).repeat(3, 1, 1)
             masked_im = im #* top_mask
 
             masked_curr_data_im = viewpoint_cam.original_image.cuda() #* top_mask
@@ -144,9 +109,7 @@ def train(seq, exp, opt=None, pipe=None):
             
         progress_bar.close()
         output_params.append(params2cpu(params, is_initial_timestep))
-        #print(output_params)
-        if is_initial_timestep:
-            variables = initialize_post_first_timestep(params, variables, optimizer)
+
 
 if __name__ == "__main__":
     import argparse
