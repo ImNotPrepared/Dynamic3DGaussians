@@ -390,17 +390,7 @@ def visualize_all(seq, exp):
                 first_ = np.array(depth.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
                 cv2.imwrite(os.path.join(base_visuals_path, filename,'sys', f'depth_{cam_index}.png'), first_)
 
-                poses = render_wander_path(w2c, k)
 
-                tto = []
-                for i, pose in enumerate(poses):
-                    camera = PerspectiveCameras(device="cuda", R=pose[None, ...], K=k[None, ...])
-                    im, _ = render(pose, k, scene_data, w, h, near, far)
-                    im = np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
-                    image = Image.fromarray((im).astype(np.uint8))
-                    tto.append(image)
-                imageio.mimsave(os.path.join(base_visuals_path,filename, 'sys', f'{cam_index-1399}_aaa.gif'), tto, fps=10)
-              
                 num_frames = 20
                 angles = torch.linspace(0, 2 * np.pi, num_frames)
 

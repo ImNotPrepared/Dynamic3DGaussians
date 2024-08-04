@@ -46,6 +46,8 @@ def get_dataset(t, md, seq, mode='stat_only'):
     
     else:
       directory = '/data3/zihanwa3/Capstone-DSR/Appendix/SR_7_pls'
+
+    directory='/data3/zihanwa3/Capstone-DSR/Appendix/SR_7_noMask'
     jpg_filenames = get_jpg_filenames(directory)
 
 
@@ -65,29 +67,11 @@ def get_dataset(t, md, seq, mode='stat_only'):
             k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
             cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
             fn = md['fn'][t][c] # mask_{fn.split('/')[0]}
-            if dino_mask:
-              mask_path=f"/ssd0/zihanwa3/data_ego/lalalal_newmask/{fn.split('/')[-1]}"
-            else:
-              mask_path=f"/ssd0/zihanwa3/data_ego/SR_7_mask/{fn.split('/')[-1].replace('.jpg', '.png')}"
-            mask = Image.open(mask_path).convert("L")
-            transform = transforms.ToTensor()
-            mask_tensor = transform(mask).squeeze(0)
-            anti_mask_tensor = mask_tensor > 1e-5
-            #if c in vis_filenames:
-            im = np.array(copy.deepcopy(Image.open(f"/ssd0/zihanwa3/data_ego/{seq}/ims/{fn}")))
+            im = np.array(copy.deepcopy(Image.open(f"/ssd0/zihanwa3/data_ego/{seq}/ims/undist_data/{fn}")))
             im = torch.tensor(im).float().cuda().permute(2, 0, 1) / 255
 
-            im = torch.rot90(im, k=1, dims=(1, 2))
-
-            '''mask_path=f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(t)}/depth_{c}.npz'
-            depth = torch.tensor(np.load(mask_path)['depth_map']).float().cuda()
-            depth = torch.rot90(depth, k=1, dims=(0, 1))
-            depth = torch.clamp(depth, min=epsilon)
-            depth=1/(depth+100.)'''
-
-            anti_mask_tensor=torch.rot90(anti_mask_tensor, k=1, dims=(0, 1))
             #dataset.append({'cam': cam, 'im': im, 'id': iiiindex, 'antimask': anti_mask_tensor, 'gt_depth':depth, 'vis': True})  
-            dataset.append({'cam': cam, 'im': im, 'id': iiiindex, 'antimask': anti_mask_tensor, 'vis': True})  
+            dataset.append({'cam': cam, 'im': im, 'id': iiiindex, 'vis': True})  
 
       for c in range(1400, 1404):
           h, w = md['hw'][c]
@@ -128,7 +112,7 @@ def initialize_params(seq, md, init_pt_path):
     # init_pt_cld_before_dense init_pt_cld
 
     size=512
-    init_type='dust'
+    init_type='fused'
     #init_pt_path=f'/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/duster_{size}_scene.npz'
     #init_pt_path='/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/good_.npz'
     if init_type=='dust':
@@ -171,8 +155,33 @@ def initialize_params(seq, md, init_pt_path):
       max_cams = 305
       sq_dist, _ = o3d_knn(init_pt_cld[:, :3], 3)
       mean3_sq_dist = sq_dist.mean(-1).clip(min=0.0000001, max=0.1)
+
+
+    elif init_type=='works':
+      init_pt_cld = np.load('/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/works.npz')["data"]
+      #init_pt_cld = np.concatenate((init_pt_cld, init_pt_cld), axis=0)
+      print(len(init_pt_cld))
+      seg = init_pt_cld[:, 6]
+      max_cams = 305
+      sq_dist, _ = o3d_knn(init_pt_cld[:, :3], 3)
+      mean3_sq_dist = sq_dist.mean(-1).clip(min=0.0000001, max=0.1)
+
+    elif init_type=='instat':
+      init_pt_path='/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/SR_7_noMask.npz'
+      org_pt_path=f"/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/test_filled_img.npz"
+      org_pt_cld = np.load(org_pt_path)["data"]
+      init_pt_cld = np.load(init_pt_path)["data"]
+      init_pt_cld = np.concatenate((init_pt_cld, org_pt_cld), axis=0)
+      
+      seg = init_pt_cld[:, 6]
+      max_cams = 305
+      sq_dist, _ = o3d_knn(init_pt_cld[:, :3], 3)
+      mean3_sq_dist = sq_dist.mean(-1).clip(min=0.0000001, max=1.0)
+
+
     elif init_type=='fused':
-      init_pt_path='/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/patched_stat_imgs/pc.npz'
+      #init_pt_path='/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/patched_stat_imgs/pc.npz'
+      init_pt_path='/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/works.npz'
       org_pt_path=f"./data_ego/{seq}/init_correct.npz"
       org_pt_cld = np.load(org_pt_path)["data"]
       init_pt_cld = np.load(init_pt_path)["data"]
@@ -197,7 +206,6 @@ def initialize_params(seq, md, init_pt_path):
         'cam_m': np.zeros((max_cams, 3)),
         'cam_c': np.zeros((max_cams, 3)),
     }
-    print(params['log_scales'].shape)
     params = {k: torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True)) for k, v in
               params.items()}
 
@@ -216,12 +224,12 @@ def initialize_params(seq, md, init_pt_path):
 
 def initialize_optimizer(params, variables):
     lrs = {
-        'means3D': 0.000014 *  variables['scene_radius'], # 0000014
+        'means3D': 0.00014 *  variables['scene_radius'], # 0000014
         'rgb_colors': 0.00028, ###0.0028 will fail
         'seg_colors': 0.0,
-        'unnorm_rotations': 0.000,
-        'logit_opacities': 0.02,
-        'log_scales': 0.005,
+        'unnorm_rotations': 0.00001,
+        'logit_opacities': 0.05,
+        'log_scales': 0.002,
         'cam_m': 1e-5,
         'cam_c': 1e-5,
     }
@@ -240,16 +248,6 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
     rendervar['means2D'].retain_grad()
 
 
-    def rgb_to_grayscale(tensor):
-        # Ensure the input tensor is of shape (N, C, H, W)
-        
-        # Extract the R, G, B channels
-        r, g, b = tensor[0, :, :], tensor[1, :, :], tensor[2, :, :]
-
-        # Use the luminosity method to convert to grayscale
-        gray_tensor = 0.2989 * r + 0.5870 * g + 0.1140 * b
-
-        return gray_tensor.unsqueeze(0)
 
 
     for curr_data in curr_datasss: 
@@ -269,11 +267,6 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
       top_mask = top_mask.unsqueeze(0).repeat(3, 1, 1)
       masked_im = im * top_mask
       masked_curr_data_im = curr_data['im'] * top_mask
-
-      #if H == W:
-      #  masked_im=rgb_to_grayscale(masked_im)
-      #  masked_curr_data_im=rgb_to_grayscale(masked_curr_data_im)
-
       losses['im'] += 0.8 * l1_loss_v1(masked_im, masked_curr_data_im) + 0.2 * (1.0 - calc_ssim(masked_im, masked_curr_data_im))
     losses['im'] /= len(curr_datasss)
     #losses['depth'] /= len(curr_datasss)
@@ -526,7 +519,7 @@ def train(seq, exp):
     #if os.path.exists(f"./output/{exp}/{seq}"):
     #    print(f"Experiment '{exp}' for sequence '{seq}' already exists. Exiting.")
     #    return
-    md = json.load(open(f"./data_ego/{seq}/train_meta.json", 'r'))  # metadata
+    md = json.load(open(f"./data_ego/{seq}/train_meta_f670.json", 'r'))  # metadata
     num_timesteps = len(md['fn'])
 
     #/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/duster_512_scene.npz
@@ -549,7 +542,7 @@ def train(seq, exp):
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
 
-        num_iter_per_timestep = int(1.7e4) if is_initial_timestep else 2
+        num_iter_per_timestep = int(4.2e4) if is_initial_timestep else 2
         progress_bar = tqdm(range(num_iter_per_timestep), desc=f"timestep {t}")
         for i in range(num_iter_per_timestep):
             progressive_params = []
@@ -559,7 +552,7 @@ def train(seq, exp):
             loss.backward()
             with torch.no_grad():
                 report_progress(params, dataset[0], i, progress_bar)
-                report_stat_progress(params, curr_data, i, progress_bar,md)
+                #report_stat_progress(params, curr_data, i, progress_bar,md)
                 if is_initial_timestep:
                     params, variables = densify(params, variables, optimizer, i)
                 assert ((params['means3D'].shape[0]==0) is False)
