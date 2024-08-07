@@ -40,19 +40,16 @@ def get_dataset(t, md, seq, mode='stat_only'):
 
     # Specify the directory containing the .jpg files   precise_reduced_im
                 # /ssd0/zihanwa3/data_ego/nice100 '/data3/zihanwa3/Capstone-DSR/Appendix/lalalal_new'# /data3/zihanwa3/Capstone-DSR/Appendix/nice10
-    dino_mask=False
+    dino_mask=True
     if dino_mask:
       directory = '/data3/zihanwa3/Capstone-DSR/Appendix/SR300'
     
     else:
       directory = '/data3/zihanwa3/Capstone-DSR/Appendix/SR_7_pls'
 
-    directory='/data3/zihanwa3/Capstone-DSR/Appendix/SR_7_noMask'
+    #directory='/data3/zihanwa3/Capstone-DSR/Appendix/SR_7_noMask'
     jpg_filenames = get_jpg_filenames(directory)
 
-
-    vis_directory = '/data3/zihanwa3/Capstone-DSR/Appendix/SR10'
-    vis_filenames = get_jpg_filenames(vis_directory)
 
     
     if mode=='ego_only':
@@ -67,11 +64,25 @@ def get_dataset(t, md, seq, mode='stat_only'):
             k, w2c =  md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
             cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
             fn = md['fn'][t][c] # mask_{fn.split('/')[0]}
-            im = np.array(copy.deepcopy(Image.open(f"/ssd0/zihanwa3/data_ego/{seq}/ims/undist_data/{fn}")))
-            im = torch.tensor(im).float().cuda().permute(2, 0, 1) / 255
+            if dino_mask:
+              mask_path=f"/ssd0/zihanwa3/data_ego/lalalal_newmask/{fn.split('/')[-1]}"
+            else:
+              mask_path=f"/ssd0/zihanwa3/data_ego/SR_7_mask/{fn.split('/')[-1].replace('.jpg', '.png')}"
+            mask = Image.open(mask_path).convert("L")
+            transform = transforms.ToTensor()
+            mask_tensor = transform(mask).squeeze(0)
+            anti_mask_tensor = mask_tensor > 1e-5
+            if dino_mask:
+              im = np.array(copy.deepcopy(Image.open(f"/ssd0/zihanwa3/data_ego/{seq}/ims/{fn}")))
+              im = torch.tensor(im).float().cuda().permute(2, 0, 1) / 255
+              im = torch.rot90(im, k=1, dims=(1, 2))
+            else:
+              im = np.array(copy.deepcopy(Image.open(f"/ssd0/zihanwa3/data_ego/{seq}/ims/undist_data/{fn}")))
+              im = torch.tensor(im).float().cuda().permute(2, 0, 1) / 255
 
+            #anti_mask_tensor=torch.rot90(anti_mask_tensor, k=1, dims=(0, 1))
             #dataset.append({'cam': cam, 'im': im, 'id': iiiindex, 'antimask': anti_mask_tensor, 'gt_depth':depth, 'vis': True})  
-            dataset.append({'cam': cam, 'im': im, 'id': iiiindex, 'vis': True})  
+            dataset.append({'cam': cam, 'im': im, 'id': iiiindex, 'antimask': anti_mask_tensor, 'vis': True})  
 
       for c in range(1400, 1404):
           h, w = md['hw'][c]
@@ -158,7 +169,7 @@ def initialize_params(seq, md, init_pt_path):
 
 
     elif init_type=='works':
-      init_pt_cld = np.load('/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/works.npz')["data"]
+      init_pt_cld = np.load('/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/works_3.npz')["data"]
       #init_pt_cld = np.concatenate((init_pt_cld, init_pt_cld), axis=0)
       print(len(init_pt_cld))
       seg = init_pt_cld[:, 6]
@@ -181,7 +192,7 @@ def initialize_params(seq, md, init_pt_path):
 
     elif init_type=='fused':
       #init_pt_path='/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/patched_stat_imgs/pc.npz'
-      init_pt_path='/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/works.npz'
+      init_pt_path='/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/works_4.npz'
       org_pt_path=f"./data_ego/{seq}/init_correct.npz"
       org_pt_cld = np.load(org_pt_path)["data"]
       init_pt_cld = np.load(init_pt_path)["data"]
@@ -224,7 +235,7 @@ def initialize_params(seq, md, init_pt_path):
 
 def initialize_optimizer(params, variables):
     lrs = {
-        'means3D': 0.00014 *  variables['scene_radius'], # 0000014
+        'means3D': 0.000014 *  variables['scene_radius'], # 0000014
         'rgb_colors': 0.00028, ###0.0028 will fail
         'seg_colors': 0.0,
         'unnorm_rotations': 0.00001,
@@ -261,11 +272,26 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
       #print(im.max(),im.min())
       #print('-'*100)
       H, W =im.shape[1], im.shape[2]
-
       top_mask = torch.zeros((H, W), device=im.device)
-      top_mask[:, :]=1 
+      top_mask[:, :]=1
+      #c_data=curr_data['im']
+
+      if 'antimask' in curr_data.keys():
+        mask_path='/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/masked_cmu_bike/triangular_mask.jpg'
+        default_mask= torch.tensor(cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE), device=im.device)
+        default_mask = default_mask>1e-5
+
+        antimask=curr_data['antimask'].to(params['cam_c'][curr_id].device)
+        combined_mask = ~torch.logical_or(default_mask, antimask)
+        top_mask = combined_mask.type(torch.uint8)
+        top_mask=torch.rot90(top_mask, k=1, dims=(0, 1))
+
       top_mask = top_mask.unsqueeze(0).repeat(3, 1, 1)
+
+
       masked_im = im * top_mask
+
+
       masked_curr_data_im = curr_data['im'] * top_mask
       losses['im'] += 0.8 * l1_loss_v1(masked_im, masked_curr_data_im) + 0.2 * (1.0 - calc_ssim(masked_im, masked_curr_data_im))
     losses['im'] /= len(curr_datasss)
@@ -519,7 +545,8 @@ def train(seq, exp):
     #if os.path.exists(f"./output/{exp}/{seq}"):
     #    print(f"Experiment '{exp}' for sequence '{seq}' already exists. Exiting.")
     #    return
-    md = json.load(open(f"./data_ego/{seq}/train_meta_f670.json", 'r'))  # metadata
+    #md = json.load(open(f"./data_ego/{seq}/train_meta_f670.json", 'r'))  # metadata
+    md = json.load(open(f"./data_ego/{seq}/train_meta.json", 'r'))
     num_timesteps = len(md['fn'])
 
     #/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/duster_512_scene.npz

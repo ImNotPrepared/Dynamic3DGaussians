@@ -176,6 +176,7 @@ def report_stat_progress(params, t, i, progress_bar, md, every_i=2100):
             wandb.log({
                 f"stat_combined_{c}_{t}": wandb.Image(combined, caption=f"Rendered image and depth at iteration {i}")
             })
+
 def params2rendervar(params, index=38312):
     ## [org, new_params(person)]
     rendervar = {
@@ -199,9 +200,9 @@ def add_new_gaussians(params, variables, scene_radius):
     logit_opacities
     log_scales
     '''
-    path='/data3/zihanwa3/Capstone-DSR/Processing/3D/aug_person.npz'
+    #path='/data3/zihanwa3/Capstone-DSR/Processing/3D/aug_person.npz'
 
-    path='/data3/zihanwa3/Capstone-DSR/Processing/3D/filtered_person.npz'
+    #path='/data3/zihanwa3/Capstone-DSR/Processing/3D/filtered_person.npz'
     new_pt_cld = np.load(path)["data"]
     print('dyn_len', len(new_pt_cld))
     new_params = initialize_new_params(new_pt_cld)

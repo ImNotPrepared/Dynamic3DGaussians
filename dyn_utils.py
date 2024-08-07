@@ -68,9 +68,9 @@ def get_batch_window(todo_dataset, dataset):
     return todo_dataset #[curr_data] todo_dataset#
 
 
-def initialize_params(seq, md, exp):
+def initialize_params(seq, md, exp, surfix='output'):
     # init_pt_cld_before_dense init_pt_cld
-    ckpt_path=f'./output/no-depth/{seq}/params.npz'
+    ckpt_path=f'./{surfix}/no-depth/{seq}/params.npz'
     params = dict(np.load(ckpt_path, allow_pickle=True))
     params = {k: torch.tensor(params[k]).cuda().float().requires_grad_(True) for k in params.keys()}
     cam_centers = np.linalg.inv(md['w2c'][0])[:, :3, 3]  # Get scene radius
@@ -372,4 +372,49 @@ def get_scene_prior(prior_path):
   ### priors in a shape of [N_f , N_g, 3]
   priors = load()
   return priors
-  
+
+def load_camera(cam_id, use_ndc=False, resize=512):
+    s_id, e_id = int(cam_id)-1, int(cam_id)
+    df = pd.read_csv('/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/cmu_bike/gopro_calibs.csv')[s_id:e_id]
+
+    intrinsics =np.array(df[['image_width','image_height','intrinsics_0','intrinsics_1','intrinsics_2','intrinsics_3']].values.tolist())
+    if resize:
+      for item in intrinsics:
+        w, h = resize, (2160/3840)*resize
+        org_width, org_height, fx, fy, cx, cy = item
+        ratio = w/org_width
+        assert org_width/w==org_height/h
+        fx *= ratio
+        fy *= ratio
+        cx *= ratio
+        cy *= ratio
+   
+    import torch
+    q_values = df[['qw_world_cam', 'qx_world_cam', 'qy_world_cam', 'qz_world_cam']].values[0]#[3,0,1,2]
+    t_values = df[['tx_world_cam', 'ty_world_cam', 'tz_world_cam']].values[0]
+    q_values_tensor = torch.tensor(q_values, dtype=torch.float64)
+    t_values_tensor = torch.tensor(t_values, dtype=torch.float64)
+    
+    f = fx 
+    px, py = cx, cy
+
+    focal_length_ndc = torch.tensor([[f, f]], dtype=torch.float32)
+    principal_point_ndc = torch.tensor([[px, py]], dtype=torch.float32)
+
+
+    from pytorch3d.transforms import quaternion_to_matrix, Translate
+    import torch
+
+
+    R = quaternion_to_matrix(q_values_tensor.unsqueeze(0))  
+    T = t_values_tensor.unsqueeze(0)
+    print(T)
+    camera = PerspectiveCameras(
+        R = R,
+        T = T,
+        focal_length=focal_length_ndc,
+        principal_point=principal_point_ndc,
+        device=torch.device("cpu") 
+    )
+
+    return camera

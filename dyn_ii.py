@@ -6,6 +6,7 @@ import numpy as np
 from PIL import Image
 from random import randint
 from tqdm import tqdm
+import glob
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 from helpers import setup_camera, l1_loss_v1, l1_loss_v2, weighted_l2_loss_v1, weighted_l2_loss_v2, quat_mult, \
     o3d_knn, params2cpu, save_params
@@ -86,18 +87,53 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
 
     return loss, variables, losses
   
+def toworld_projections(pred_path='/data3/zihanwa3/Capstone-DSR/Appendix/SpaTracker'):
+    xyds = get_cat_preds(pred_path=pred_path)
+    points=[]
+    seq_len = len(xyds[0])
+    for i, cam_id in enumerate(['1','2', '4', '4', '4']):
+      camera = load_camera(cam_id)
+      xyd = xyds[i]
+
+      xyd = xyd.reshape(-1, 3)
+      point = camera.unproject_points(xyd, world_coordinates=True)# +torch.tensor([-0.4, 2, -1.1])#/255
+      point = point.reshape(seq_len, -1, 3)
+      points.append(point)
+    points = np.concatenate((points), axis=1)
+    return points
+
+def get_cat_preds(path):
+    tracks=[]
+    for index in [1, 2, 4, 5, 6]:
+      file_path = os.path.join(path, f'vis_results_{index}')
+      print(path)
+      file_pattern = os.path.join(file_path, 'task_dynamic_tossing_spatracker*')
+      files = glob.glob(file_pattern)
+      files = [file for file in files if not file.endswith('.mp4')]
+    
+      for file_path in files:
+        track=np.load(file_path)
+        tracks.append(track)
+    return tracks
+
 def train(seq, exp):
     md = json.load(open(f"./data_ego/{seq}/Dy_train_meta.json", 'r'))  # metadata
     num_timesteps = len(md['fn'])
-    params, variables, sriud = initialize_params(seq, md, exp)
+    params, variables, sriud = initialize_params(seq, md, exp, surfix='old_output')
     params, variables =  add_new_gaussians(params, variables, sriud)
     optimizer = initialize_optimizer(params, variables)
 
 
+    pred_path='/data3/zihanwa3/Capstone-DSR/Appendix/SpaTracker'
+
+    preds=toworld_projections(pred_path)
+    ### preds in shape of [timestap, N, (x,y,d)] (37, N, 3)
+
+    assert len(params)-38822 == len(preds[0])
     output_params = []
 
     initialize_wandb(exp, seq)
-    org_params=initialize_params(seq, md, exp)
+    org_params=initialize_params(seq, md, exp, surfix='old_output')
     ### revise
     reversed_range = list(range(110, -1, -3))
     temporal_windows = [reversed_range[i:i+10] for i in range(0, 110, 10)]
@@ -119,6 +155,8 @@ def train(seq, exp):
           params 
           loss, variables, losses = get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=stat_dataset, org_params=None)
           total_loss += loss
+
+          
         total_loss /= len(window_data)
         total_loss.backward()
 
