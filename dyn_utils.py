@@ -68,19 +68,7 @@ def get_batch_window(todo_dataset, dataset):
     return todo_dataset #[curr_data] todo_dataset#
 
 
-def initialize_params(seq, md, exp, surfix='output'):
-    # init_pt_cld_before_dense init_pt_cld
-    ckpt_path=f'./{surfix}/no-depth/{seq}/params.npz'
-    params = dict(np.load(ckpt_path, allow_pickle=True))
-    params = {k: torch.tensor(params[k]).cuda().float().requires_grad_(True) for k in params.keys()}
-    cam_centers = np.linalg.inv(md['w2c'][0])[:, :3, 3]  # Get scene radius
-    scene_radius = 1.1 * np.max(np.linalg.norm(cam_centers - np.mean(cam_centers, 0)[None], axis=-1))
 
-    variables = {'max_2D_radius': torch.zeros(params['means3D'].shape[0]).cuda().float(),
-                 'scene_radius': scene_radius,
-                 'means2D_gradient_accum': torch.zeros(params['means3D'].shape[0]).cuda().float(),
-                 'denom': torch.zeros(params['means3D'].shape[0]).cuda().float()}
-    return params, variables, scene_radius
 
 def report_stat_progress(params, t, i, progress_bar, md, every_i=2100):
     import matplotlib.pyplot as plt
@@ -215,17 +203,11 @@ def params2rendervar(params):
     }
     return rendervar
 
-def add_new_gaussians(params, variables, scene_radius):
+def add_new_gaussians(params, scene_radius):
     path='/data3/zihanwa3/Capstone-DSR/Processing/3D/aug_person.npz'
     new_pt_cld = np.load(path)["data"]
     print('dyn_len', len(new_pt_cld))
     new_params = initialize_new_params(new_pt_cld)
-
-    
-    variables = {'max_2D_radius': torch.zeros(new_params['means3D'].shape[0]).cuda().float(),
-                 'scene_radius': scene_radius,
-                 'means2D_gradient_accum': torch.zeros(new_params['means3D'].shape[0]).cuda().float(),
-                 'denom': torch.zeros(new_params['means3D'].shape[0]).cuda().float()}
     for k, v in new_params.items():
       params_no_grad = params[k]#.requires_grad_(False)  # 使 params[k] 不需要梯度
       if len(params_no_grad.shape) == 3:
@@ -316,6 +298,22 @@ def initialize_optimizer(params, variables):
     return torch.optim.Adam(param_groups, lr=0.0, eps=1e-15)
 
 
+
+
+def initialize_params(seq, md, exp, surfix='output'):
+    # init_pt_cld_before_dense init_pt_cld
+    ckpt_path=f'./{surfix}/no-depth/{seq}/params.npz'
+    params = dict(np.load(ckpt_path, allow_pickle=True))
+    params = {k: torch.tensor(params[k]).cuda().float().requires_grad_(True) for k in params.keys()}
+    cam_centers = np.linalg.inv(md['w2c'][0])[:, :3, 3]  # Get scene radius
+    scene_radius = 1.1 * np.max(np.linalg.norm(cam_centers - np.mean(cam_centers, 0)[None], axis=-1))
+
+    variables = {'max_2D_radius': torch.zeros(params['means3D'].shape[0]).cuda().float(),
+                 'scene_radius': scene_radius,
+                 'means2D_gradient_accum': torch.zeros(params['means3D'].shape[0]).cuda().float(),
+                 'denom': torch.zeros(params['means3D'].shape[0]).cuda().float()}
+    return params, variables, scene_radius
+    
 def initialize_per_timestep(params, variables, optimizer):
     pts = params['means3D']
     rot = torch.nn.functional.normalize(params['unnorm_rotations'])
@@ -353,6 +351,28 @@ def initialize_post_first_timestep(params, variables, optimizer, num_knn=20):
     variables["init_bg_pts"] = init_bg_pts.detach()
     variables["init_bg_rot"] = init_bg_rot.detach()
     variables["prev_pts"] = params['means3D'].detach()
+    variables["prev_rot"] = torch.nn.functional.normalize(params['unnorm_rotations']).detach()
+    params_to_fix = ['logit_opacities', 'log_scales', 'cam_m', 'cam_c']
+    for param_group in optimizer.param_groups:
+        if param_group["name"] in params_to_fix:
+            param_group['lr'] = 0.0
+    return variables
+
+def initialize_post_first_timestep_temporal(params, variables, optimizer, num_knn=20):
+    is_fg = params['label']==1
+    init_fg_pts = params['means3D'][0][is_fg]
+    init_bg_pts = params['means3D'][0][~is_fg]
+    init_bg_rot = torch.nn.functional.normalize(params['unnorm_rotations'][~is_fg])
+    neighbor_sq_dist, neighbor_indices = o3d_knn(init_fg_pts.detach().cpu().numpy(), num_knn)
+    neighbor_weight = np.exp(-2000 * neighbor_sq_dist)
+    neighbor_dist = np.sqrt(neighbor_sq_dist)
+    variables["neighbor_indices"] = torch.tensor(neighbor_indices).cuda().long().contiguous()
+    variables["neighbor_weight"] = torch.tensor(neighbor_weight).cuda().float().contiguous()
+    variables["neighbor_dist"] = torch.tensor(neighbor_dist).cuda().float().contiguous()
+
+    variables["init_bg_pts"] = init_bg_pts.detach()
+    variables["init_bg_rot"] = init_bg_rot.detach()
+    variables["prev_pts"] = params['means3D'][0].detach()
     variables["prev_rot"] = torch.nn.functional.normalize(params['unnorm_rotations']).detach()
     params_to_fix = ['logit_opacities', 'log_scales', 'cam_m', 'cam_c']
     for param_group in optimizer.param_groups:

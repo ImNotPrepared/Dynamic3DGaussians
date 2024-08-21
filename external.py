@@ -244,12 +244,16 @@ def densify(params, variables, optimizer, i):
             variables['means2D_gradient_accum'] = torch.zeros(num_pts, device="cuda")
             variables['denom'] = torch.zeros(num_pts, device="cuda")
             variables['max_2D_radius'] = torch.zeros(num_pts, device="cuda")
-            to_remove = torch.cat((to_split, torch.zeros(n * to_split.sum(), dtype=torch.bool, device="cuda")))
-            params, variables = remove_points(to_remove, params, variables, optimizer)
+
+
+            #to_remove = torch.cat((to_split, torch.zeros(n * to_split.sum(), dtype=torch.bool, device="cuda")))
+            #params, variables = remove_points(to_remove, params, variables, optimizer)
+
+
             #_, _, mask= o3d_knn_compact_gaussians_with_mask(params['means3D'].detach().cpu().numpy(), 20, int(0.99*len(params['means3D'].detach().cpu().numpy())))
             
 
-            remove_threshold = 0.5 if i == 5000 else 0.001 #005
+            remove_threshold = 0.005 if i == 5000 else 0.001 #005
             to_remove = (torch.sigmoid(params['logit_opacities']) < remove_threshold).squeeze()
 
 
@@ -258,7 +262,7 @@ def densify(params, variables, optimizer, i):
             if i >= 3000:
                 big_points_ws = torch.exp(params['log_scales']).max(dim=1).values > 0.1 * variables['scene_radius']
                 to_remove = torch.logical_or(to_remove, big_points_ws)
-            params, variables = remove_points(to_remove, params, variables, optimizer)
+            #params, variables = remove_points(to_remove, params, variables, optimizer)
             #print('4st',  params['means3D'].shape[0],  params['label'].shape[0])
 
             torch.cuda.empty_cache()

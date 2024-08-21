@@ -18,7 +18,7 @@ import torchvision.transforms as transforms
 import torch.nn.functional as F
 from dyn_utils import *
 
-def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=None):
+def get_loss(params, curr_datasss, variables, is_initial_timestep):
     losses = {
         'depth': 0,
         'im': 0,
@@ -39,21 +39,9 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
         H, W = im.shape[1], im.shape[2]
         top_mask = torch.ones((H, W), device=im.device)
         combined_mask = top_mask.type(torch.uint8)
-
-        ground_truth_depth = curr_data['gt_depth']
-        depth_pred = F.interpolate(depth_pred.unsqueeze(0), size=(288, 512), mode='bilinear', align_corners=False)
-        ground_truth_depth = ground_truth_depth.reshape(-1, 1)
-        depth_pred = depth_pred.reshape(-1, 1)
-
-        valid_mask = ground_truth_depth != 0
-        depth_pred = depth_pred[valid_mask]
-        ground_truth_depth = ground_truth_depth[valid_mask]
-        losses['depth'] += (1 - pearson_corrcoef(ground_truth_depth, 1 / (depth_pred + 100)))
-
         top_mask = top_mask.unsqueeze(0).repeat(3, 1, 1)
         masked_im = im * top_mask
         masked_curr_data_im = curr_data['im'] * top_mask
-
         losses['im'] += 0.8 * l1_loss_v1(masked_im, masked_curr_data_im) + 0.2 * (1.0 - calc_ssim(masked_im, masked_curr_data_im))
 
         variables['means2D'] = rendervar['means2D']
@@ -119,26 +107,32 @@ def get_cat_preds(path):
 def train(seq, exp):
     md = json.load(open(f"./data_ego/{seq}/Dy_train_meta.json", 'r'))  # metadata
     num_timesteps = len(md['fn'])
-    params, variables, sriud = initialize_params(seq, md, exp, surfix='old_output')
-    params, variables =  add_new_gaussians(params, variables, sriud)
+    params, _, sriud = initialize_params(seq, md, exp, surfix='old_output')
+    params, variables =  add_new_gaussians(params, sriud)
     optimizer = initialize_optimizer(params, variables)
+    ### [t, N, 3]
+    relative_motion = preds-params['means3D']
+    params['means3D']=relative_motion+params['means3D'] #[t, N, 3]
 
 
     pred_path='/data3/zihanwa3/Capstone-DSR/Appendix/SpaTracker'
-
     preds=toworld_projections(pred_path)
     ### preds in shape of [timestap, N, (x,y,d)] (37, N, 3)
-
     assert len(params)-38822 == len(preds[0])
     output_params = []
-
     initialize_wandb(exp, seq)
-    org_params=initialize_params(seq, md, exp, surfix='old_output')
+
+
     ### revise
     reversed_range = list(range(110, -1, -3))
     temporal_windows = [reversed_range[i:i+10] for i in range(0, 110, 10)]
 
-    get_batch_window
+    ### 1. Build Isotropic Gaussians 
+    ### 2. Revise params, 
+    ### 3. Read a New Mask for Each Timestamp, Init new Track 
+    ### 4. 
+    ### 5. Add Regularization 
+    
     for temporal_window in temporal_windows:
         dataset = get_dataset(temporal_window, md, seq, mode='ego_only')
         stat_dataset = None
@@ -146,26 +140,20 @@ def train(seq, exp):
         is_initial_timestep = (int(t) == 110)
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
-        num_iter_per_timestep = int(5.8e3) if is_initial_timestep else int(2.1e3)
-
+        #num_iter_per_timestep = int(2.8e3) if is_initial_timestep else int(2.8e3)
         
         curr_data = get_batch_window(todo_dataset, dataset)
+        ########### GET THE DATA ###########
         total_loss = 0
-        for any_ in window_data:
-          params 
-          loss, variables, losses = get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=stat_dataset, org_params=None)
-          total_loss += loss
 
-          
+          loss, variables, losses = get_loss(params, curr_data, variables, is_initial_timestep)
+          total_loss += loss
         total_loss /= len(window_data)
         total_loss.backward()
 
 
         with torch.no_grad():
-            #report_progress(params, dataset[0], i, progress_bar)
             report_stat_progress(params, t, i, progress_bar, md)
-            #if is_initial_timestep:
-            #    params, variables = densify(params, variables, optimizer, i)
             assert ((params['means3D'].shape[0]==0) is False)
             optimizer.step()
             optimizer.zero_grad(set_to_none=True)
@@ -176,7 +164,7 @@ def train(seq, exp):
         output_params.append(params2cpu(params, is_initial_timestep))
 
         if is_initial_timestep:
-            variables = initialize_post_first_timestep(params, variables, optimizer)
+            variables = initialize_post_first_timestep_temporal(params, variables, optimizer)
 
     save_params(output_params, seq, exp)
 
