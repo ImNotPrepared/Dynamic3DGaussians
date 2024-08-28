@@ -14,6 +14,7 @@ from pytorch3d.renderer import (
     AlphaCompositor,
     PerspectiveCameras
 )
+import imageio.v3 as iio
 import os
 import imageio
 import torch
@@ -60,6 +61,15 @@ def interpolate_between_two_cameras(w2c_start, w2c_end, k_start, k_end, t):
     interpolated_intrinsics = k_start * (1 - t) + k_end * t
 
     return interpolated_w2c, interpolated_intrinsics
+
+def make_video_divisble(
+    video, block_size=16
+) :
+    H, W = video.shape[1:3]
+    H_new = H - H % block_size
+    W_new = W - W % block_size
+    return video[:, :H_new, :W_new]
+
 
 # Function to interpolate between a list of cameras
 def interpolate_cameras(json_file, cam_indices, frame_index=0):
@@ -428,8 +438,15 @@ def visualize(seq, exp):
     md=json_file
     # Example usage
     cam_indices = [1, 2, 3, 4, 1]
-    reversed_range = list(range(111, -1, -3))
-    #for i, frame_index in enumerate(reversed_range):
+    reversed_range = list(range(111, -1, -5))
+
+
+    #video Tracks: # (B,T,N,2)
+
+
+
+    from tqdm import tqdm
+
     interpolated_cameras = interpolate_cameras(json_file, cam_indices)
       
     for cam_index, (w2c, k) in enumerate(interpolated_cameras):
@@ -447,23 +464,41 @@ def visualize(seq, exp):
         im = cv2.resize(im, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
 
         images = []
+        video=[]
         #294-111=183
-        reversed_range = list(range(111, -1, -3))
+        reversed_range = list(range(111, -1, -5))
         w2c = np.linalg.inv(w2c)
 
-        for i, frame_index in enumerate(reversed_range):
+        for i, frame_index in tqdm(enumerate(reversed_range)):
             #w2c, k = (np.array((json_file['w2c'])[frame_index][cam_index]), np.array(json_file['k'][frame_index][cam_index]))
             
             im, depth = render(w2c, k, scene_data[i], w, h, near, far)
             im=im.clip(0,1)
             first_ = np.array(im.detach().cpu().permute(1, 2, 0).numpy()[:, :, ::-1]) * 255
+            
+
+
+
+            '''if i>1:
+              tracks_3d = (scene_data[i]['means3D'] - scene_data[i-1]['means3D']).unsqueeze(1).detach().cpu().double()#[:1000]  # (N, B, 3)
+              print(f"{tracks_3d.shape=}")
+              tracks_2d = torch.einsum(
+                  "ij,bjk,nbk->nbi", torch.tensor(k).double(), torch.tensor(w2c[None, ...])[:, :3].double(), F.pad(tracks_3d, (0, 1), value=1.0)
+              )
+              tracks_2d = tracks_2d[..., :2] / tracks_2d[..., 2:]
+              print(f"{tracks_2d.shape=}")
+              out_img = draw_tracks_2d(im.permute(1, 2, 0), tracks_2d)
+              video.append(out_img)'''
             im = np.array(im.detach().cpu().permute(1, 2, 0).numpy()) * 255
             new_width, new_height = 256, 144  # desired dimensions
             im = cv2.resize(im, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
             image = Image.fromarray((im).astype(np.uint8))
-
-            #cv2.imwrite(os.path.join(base_visuals_path, 'rot', f'cam_{angle}.png'), first_)
             images.append(np.array(image))
+
+        #video = np.stack(video, 0)
+        #print(video.shape)
+        #iio.imwrite(os.path.join(base_visuals_path, 'ego', f'tracks_{cam_index}.mp4'), make_video_divisble(video), fps=5)
+        #imageio.mimsave(os.path.join(base_visuals_path, 'ego', f'tracks_{cam_index}.gif'), video, fps=5)
         imageio.mimsave(os.path.join(base_visuals_path, 'ego', f'inter_{cam_index}.gif'), images, fps=5)
 
       
@@ -494,7 +529,7 @@ def visualize(seq, exp):
 
         images = []
         #294-111=183
-        reversed_range = list(range(111, -1, -3))
+        reversed_range = list(range(111, -1, -5))
 
         for i, frame_index in enumerate(reversed_range):
             print(frame_index,  cam_index)
@@ -539,6 +574,10 @@ def storePly(path, xyz, rgb):
 if __name__ == "__main__":
     import os
     import sys
+    import torch.nn.functional as F
+    
+    
+    
     sequence = 'cmu_bike'
     exp_name = sys.argv[1]
     

@@ -26,6 +26,8 @@ from pytorch3d.renderer import (
     AlphaCompositor,
     PerspectiveCameras
 )
+from matplotlib import colormaps
+
 import cv2
 import os
 import imageio
@@ -41,6 +43,58 @@ from pytorch3d.renderer import (
 from PIL import Image
 from pytorch3d.transforms import RotateAxisAngle
 from tqdm import tqdm
+def draw_tracks_2d(
+    img: torch.Tensor,
+    tracks_2d: torch.Tensor,
+    track_point_size: int = 2,
+    track_line_width: int = 1,
+    cmap_name: str = "gist_rainbow",
+):
+    cmap = colormaps.get_cmap(cmap_name)
+    # (H, W, 3).
+    img_np = (img.cpu().numpy() * 255.0).astype(np.uint8)
+    # (P, N, 2).
+    tracks_2d_np = tracks_2d.cpu().numpy()
+
+    num_tracks, num_frames = tracks_2d_np.shape[:2]
+
+    canvas = img_np.copy()
+    for i in range(num_frames - 1):
+        alpha = max(1 - 0.9 * ((num_frames - 1 - i) / (num_frames * 0.99)), 0.1)
+        img_curr = canvas.copy()
+        for j in range(num_tracks):
+            color = tuple(np.array(cmap(j / max(1, float(num_tracks - 1)))[:3]) * 255)
+            color_alpha = 1
+            hsv = colorsys.rgb_to_hsv(color[0], color[1], color[2])
+            color = colorsys.hsv_to_rgb(hsv[0], hsv[1] * color_alpha, hsv[2])
+            pt1 = tracks_2d_np[j, i]
+            pt2 = tracks_2d_np[j, i + 1]
+            p1 = (int(round(pt1[0])), int(round(pt1[1])))
+            p2 = (int(round(pt2[0])), int(round(pt2[1])))
+            img_curr = cv2.line(
+                img_curr,
+                p1,
+                p2,
+                color,
+                thickness=track_line_width,
+                lineType=cv2.LINE_AA,
+            )
+        canvas = cv2.addWeighted(img_curr, alpha, canvas, 1 - alpha, 0)
+
+    for j in range(num_tracks):
+        color = tuple(np.array(cmap(j / max(1, float(num_tracks - 1)))[:3]) * 255)
+        pt = tracks_2d_np[j, -1]
+        pt = (int(round(pt[0])), int(round(pt[1])))
+        canvas = cv2.circle(
+            canvas,
+            pt,
+            track_point_size,
+            color,
+            thickness=-1,
+            lineType=cv2.LINE_AA,
+        )
+
+    return canvas
 
 
 def rgbd2pcd(im, depth, w2c, k, def_pix, pix_ones, show_depth=False, project_to_cam_w_scale=None,camera=None):
@@ -274,3 +328,12 @@ def render_pointcloud_pytorch3d_360_plus(w, h, w2c, k, image_size, radius, point
         #cv2.imwrite(,rendered_image)
         rendered_images.append(rendered_image)
     return rendered_images
+
+
+
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+
