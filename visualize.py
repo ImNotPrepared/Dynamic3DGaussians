@@ -25,8 +25,17 @@ import cv2
 from PIL import Image
 from vis_utils import *
 
-near, far = 0.01, 50.0
+near, far = 1e-7, 50.0
 view_scale = 1
+
+
+def vis_depth(depth):
+  depth = np.array(depth)
+  depth_normalized = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
+  
+  depth_normalized = depth_normalized.astype(np.uint8)
+  colored_depth = (plt.cm.plasma(depth_normalized / 255.0)[:, :, :3] * 255).astype(np.uint8)
+  return colored_depth
 
 fps = 10
 def render_wander_path(c2w):
@@ -274,6 +283,7 @@ def visualize_all(seq, exp):
             rbgs_list = []
             frame_index, cam_index = 0, 0 
             tto = []
+            depths=[]
 
             for cam_index in range(1400):
                 h, w = json_file['hw'][cam_index]
@@ -297,7 +307,9 @@ def visualize_all(seq, exp):
 
                 image = Image.fromarray((first_).astype(np.uint8))
                 tto.append(image)
-
+                depth = torch.rot90(depth, k=-1, dims=(1, 2))
+                depths.append(np.transpose(vis_depth(1/np.clip(depth.detach().cpu().numpy(), near, far))[0], (0, 2, 1)))
+            imageio.mimsave(os.path.join(base_visuals_path, filename, 'sys', 'ego_depth.gif'), depths, fps=21)
             imageio.mimsave(os.path.join(base_visuals_path, filename, 'sys', 'ego.gif'), tto, fps=21)
 
             interval = 27
@@ -333,6 +345,7 @@ def visualize_all(seq, exp):
                 angles = torch.linspace(0, 2 * np.pi, num_frames)
 
                 images = []
+                depths = []
                 for i, angle in enumerate(angles):
                     cos_a, sin_a = torch.cos(angle), torch.sin(angle)
                     rotation_matrix = torch.tensor([
@@ -354,7 +367,13 @@ def visualize_all(seq, exp):
                     image = Image.fromarray((im).astype(np.uint8))
 
                     cv2.imwrite(os.path.join(base_visuals_path, filename,'rot', f'cam_{angle}.png'), first_)
+                    print('image_shape', np.array(image).shape)
+                    print('depth_shape', vis_depth(1/np.clip(depth[0].detach().cpu().numpy(), near, far)).shape)
                     images.append(np.array(image))
+
+                    depths.append(vis_depth(1/np.clip(depth[0].detach().cpu().numpy(), near, far)))
+
+                imageio.mimsave(os.path.join(base_visuals_path, filename,'rot', f'cam_{cam_index}_depth.gif'), depths, fps=5)
                 imageio.mimsave(os.path.join(base_visuals_path, filename,'rot', f'cam_{cam_index}.gif'), images, fps=5)
                 
 

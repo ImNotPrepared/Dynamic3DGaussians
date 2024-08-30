@@ -21,6 +21,41 @@ import torch.nn.functional as func
 from torch.autograd import Variable
 from math import exp
 import numpy as np 
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+class MotionBases(nn.Module):
+    def __init__(self, rots, transls):
+        super().__init__()
+        self.num_frames = rots.shape[1]
+        self.num_bases = rots.shape[0]
+        assert check_bases_sizes(rots, transls)
+        self.params = nn.ParameterDict(
+            {
+                "rots": nn.Parameter(rots),
+                "transls": nn.Parameter(transls),
+            }
+        )
+
+    @staticmethod
+    def init_from_state_dict(state_dict, prefix="params."):
+        param_keys = ["rots", "transls"]
+        assert all(f"{prefix}{k}" in state_dict for k in param_keys)
+        args = {k: state_dict[f"{prefix}{k}"] for k in param_keys}
+        return MotionBases(**args)
+
+    def compute_transforms(self, ts: torch.Tensor, coefs: torch.Tensor) -> torch.Tensor:
+        """
+        :param ts (B)
+        :param coefs (G, K)
+        returns transforms (G, B, 3, 4)
+        """
+        transls = self.params["transls"][:, ts]  # (K, B, 3)
+        rots = self.params["rots"][:, ts]  # (K, B, 6)
+        transls = torch.einsum("pk,kni->pni", coefs, transls)
+        rots = torch.einsum("pk,kni->pni", coefs, rots)  # (G, B, 6)
+        rotmats = cont_6d_to_rmat(rots)  # (K, B, 3, 3)
+        return torch.cat([rotmats, transls[..., None]], dim=-1)
 
 
 def build_rotation(q):

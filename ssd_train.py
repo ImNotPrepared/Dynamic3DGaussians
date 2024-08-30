@@ -78,7 +78,7 @@ def get_dataset(t, md, seq, mode='stat_only', clean_img=True, depth_loss=False, 
     #directory='/data3/zihanwa3/Capstone-DSR/Appendix/SR_7_noMask'
     jpg_filenames = get_jpg_filenames(directory)
 
-
+    scales_shifts = [(0.0031744423, 0.15567338), (0.0025279315, 0.106763005), (0.0048902677, 0.16312718), (0.0037271702, 0.10191789), (0.002512292, 0.114545256), (0.0029944833, 0.10527076), (0.003602787, 0.14336547), (0.003638356, 0.1080856), (0.0054704025, 0.057398915), (0.0022690576, 0.117439255), (0.002312136, 0.077383846), (0.0054023797, 0.089054525), (0.0050647566, 0.101514965), (0.0036501177, 0.13153434), (0.0008889911, 0.44202688), (0.0025493288, 0.109814465), (0.0024664444, 0.112163335), (-0.00016438629, 0.40732577), (0.0032442464, 0.19807495), (0.0048282435, 0.09168023), (0.002856112, 0.15053965), (0.0020215507, 0.107855394), (0.0030028797, 0.14278293), (0.0024490638, 0.13038686), (0.0024990174, 0.12481204), (0.0057816333, 0.077005506), (0.0019591942, 0.10089706), (0.0013262086, 0.42674613), (0.004126527, 0.13687198), (0.0022844346, 0.097172886), (0.0062575513, 0.12489089), (-0.00014962265, 0.38713253), (0.00086679566, 0.25387546), (0.0021814466, 0.10047534), (0.002019625, 0.10706337), (0.0037505955, 0.13279462), (0.0035237654, 0.12734117), (0.0019494797, 0.14369084), (0.00056177535, 0.28072894), (0.0018662697, 0.10288732), (0.00591453, 0.053784877), (0.002294414, 0.23004633), (0.0014106235, 0.14460064), (0.0013034015, 0.24912238), (0.0015928176, 0.17974892)]
     
     if mode=='ego_only':
 
@@ -114,7 +114,21 @@ def get_dataset(t, md, seq, mode='stat_only', clean_img=True, depth_loss=False, 
               if depth_loss:
                 depth_path=f'/data3/zihanwa3/Capstone-DSR/Processing/da_v2_disp/0/disp_{c}.npz'
                 depth = torch.tensor(np.load(depth_path)['depth_map'])
-                depth = torch.clamp(depth, min=near, max=far)
+                #depth = torch.clamp(depth, min=near, max=far)
+
+
+                scale, shift = scales_shifts[iiiindex]
+                disp_map = depth
+                nonzero_mask = disp_map != 0
+                disp_map[nonzero_mask] = disp_map[nonzero_mask] * scale + shift
+                valid_depth_mask = (disp_map > 0) & (disp_map <= far)
+                disp_map[~valid_depth_mask] = 0
+                depth_map = np.full(disp_map.shape, np.inf)
+                depth_map[disp_map != 0] = 1 / disp_map[disp_map != 0]
+                depth_map[depth_map == np.inf] = 0
+                depth_map = depth_map.astype(np.float32)
+                depth = torch.tensor(depth_map)
+                
                 #print(depth.shape)
                 assert depth.shape[1] ==  depth.shape[0]
                 dataset.append({'cam': cam, 'im': im, 'id': 'ssss', 'antimask': anti_mask_tensor, 'depth': depth, 'vis': True})  
@@ -143,25 +157,18 @@ def get_dataset(t, md, seq, mode='stat_only', clean_img=True, depth_loss=False, 
               #depth = torch.clamp(depth, min=near, max=far)
               assert depth.shape[1] !=  depth.shape[0]
 
-              if debug_mode == 'stat':
-                ################DOING REGULAR VIS #################
-                scales_shifts = [
-                    [0.0024324728, 0.24106099],
-                    [0.0014880468, 0.11461574],
-                    [0.0013168019, 0.24386716],
-                    [0.0020102337, 0.17089687]
-                ]
-                scale, shift = scales_shifts[c-1400]
-                disp_map = depth
-                nonzero_mask = disp_map != 0
-                disp_map[nonzero_mask] = disp_map[nonzero_mask] * scale + shift
-                valid_depth_mask = (disp_map > 0) & (disp_map <= far)
-                disp_map[~valid_depth_mask] = 0
-                depth_map = np.full(disp_map.shape, np.inf)
-                depth_map[disp_map != 0] = 1 / disp_map[disp_map != 0]
-                depth_map[depth_map == np.inf] = 0
-                depth_map = depth_map.astype(np.float32)
-                depth = torch.tensor(depth_map)
+              ################DOING REGULAR VIS #################
+              scale, shift = scales_shifts[c-1404]
+              disp_map = depth
+              nonzero_mask = disp_map != 0
+              disp_map[nonzero_mask] = disp_map[nonzero_mask] * scale + shift
+              valid_depth_mask = (disp_map > 0) & (disp_map <= far)
+              disp_map[~valid_depth_mask] = 0
+              depth_map = np.full(disp_map.shape, np.inf)
+              depth_map[disp_map != 0] = 1 / disp_map[disp_map != 0]
+              depth_map[depth_map == np.inf] = 0
+              depth_map = depth_map.astype(np.float32)
+              depth = torch.tensor(depth_map)
 
               dataset.append({'cam': cam, 'im': im, 'id': len(jpg_filenames)-1400+c, 'depth': depth, 'vis': True}) 
             else:
@@ -281,6 +288,18 @@ def initialize_params(seq, md, init_type):
       init_pt_cld = nearest_densify(org_pt_cld, init_pt_cld)
 
       init_pt_cld = np.concatenate((init_pt_cld, org_pt_cld), axis=0)
+
+
+      densified=True
+      if densified:
+          repeated_pt_cld = []
+          for _ in range(7):
+              noise = np.random.normal(0, 0.001, init_pt_cld.shape)  # Small Gaussian noise
+              noisy_pt_cld = init_pt_cld + noise
+              repeated_pt_cld.append(noisy_pt_cld)
+      init_pt_cld = np.vstack(repeated_pt_cld)
+
+
       seg = init_pt_cld[:, 6]
       max_cams = 305
       sq_dist, _ = o3d_knn(init_pt_cld[:, :3], 3)
@@ -299,7 +318,7 @@ def initialize_params(seq, md, init_type):
       if densified:
           repeated_pt_cld = []
           for _ in range(7):
-              noise = np.random.normal(0, 0.01, init_pt_cld.shape)  # Small Gaussian noise
+              noise = np.random.normal(0, 0.001, init_pt_cld.shape)  # Small Gaussian noise
               noisy_pt_cld = init_pt_cld + noise
               repeated_pt_cld.append(noisy_pt_cld)
     
@@ -401,6 +420,7 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
         combined_mask = ~torch.logical_or(antimask, antimask)# ~torch.logical_or(default_mask, antimask)
         top_mask = combined_mask.type(torch.uint8)
 
+
       if depth_loss:
         #if H==W:
         if depth_loss=='l1':
@@ -420,6 +440,8 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
 
           #  gt_depth: 1/zoe_depth(metric_depth) -> 1/real_depth; gasussian
           losses['depth'] += (1 - pearson_corrcoef( ground_truth_depth, (depth_pred)))
+
+
       top_mask = top_mask.unsqueeze(0).repeat(3, 1, 1)
 
 
@@ -449,7 +471,7 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
 
     variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
 
-    loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'depth': 2e-1,
+    loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'depth': 2e-3,
                     'soft_col_cons': 0.00}
                     
     loss = sum([loss_weights[k] * v for k, v in losses.items()])
@@ -771,7 +793,7 @@ if __name__ == "__main__":
     parser.add_argument('--exp_name', type=str, required=True, help='Name of the experiment')
     parser.add_argument('--init_type', type=str, default='org_densifed', 
     choices=['dust', 'ego4d', 'works', 'instat', 'dv2', 'org_densifed', 'fused', 'duplicated'], help='Initialization type')
-    parser.add_argument('--loss_type', type=str, default='pearson')
+    parser.add_argument('--loss_type', type=str, default='l1')
     parser.add_argument('--depth_loss', type=str, default='l1', 
     choices=['l1', 'pearson'], help='Initialization type')
     parser.add_argument('--debug_mode', type=str, default='no', 
