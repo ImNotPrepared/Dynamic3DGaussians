@@ -18,6 +18,7 @@ import torch.nn.functional as F
 from torchmetrics.functional.regression import pearson_corrcoef
 import torchvision.transforms as transforms
 
+from ideaII import flow_loss
 
 near, far = 1e-7, 7e0
 
@@ -293,7 +294,7 @@ def initialize_params(seq, md, init_type):
       densified=True
       if densified:
           repeated_pt_cld = []
-          for _ in range(7):
+          for _ in range(4):
               noise = np.random.normal(0, 0.001, init_pt_cld.shape)  # Small Gaussian noise
               noisy_pt_cld = init_pt_cld + noise
               repeated_pt_cld.append(noisy_pt_cld)
@@ -398,6 +399,7 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
     losses = {}
     losses['im'] = 0
     losses['depth'] = 0 
+    losses['flow'] = 0 
     rendervar = params2rendervar(params)
     rendervar['means2D'].retain_grad()
 
@@ -440,6 +442,10 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
 
           #  gt_depth: 1/zoe_depth(metric_depth) -> 1/real_depth; gasussian
           losses['depth'] += (1 - pearson_corrcoef( ground_truth_depth, (depth_pred)))
+      
+
+      if item > 4.9e3:
+        losses['flow'] += flow_loss(rendervar)
 
 
       top_mask = top_mask.unsqueeze(0).repeat(3, 1, 1)
@@ -471,7 +477,7 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
 
     variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
 
-    loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'depth': 2e-3,
+    loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'depth': 2e-3, 'flow':2e-8,
                     'soft_col_cons': 0.00}
                     
     loss = sum([loss_weights[k] * v for k, v in losses.items()])

@@ -19,6 +19,25 @@ import torch.nn.functional as F
 
 near, far = 1e-7, 5e1
 #### [t, c, ...]\\
+
+def load_target_tracks(
+  self, query_index: int, target_indices: list[int], dim: int = 1
+):
+  """
+  tracks are 2d, occs and uncertainties
+  :param dim (int), default 1: dimension to stack the time axis
+  return (N, T, 4) if dim=1, (T, N, 4) if dim=0
+  """
+  q_name = self.frame_names[query_index]
+  all_tracks = []
+  for ti in target_indices:
+      t_name = self.frame_names[ti]
+      path = f"{self.tracks_dir}/{q_name}_{t_name}.npy"
+      tracks = np.load(path).astype(np.float32)
+      all_tracks.append(tracks)
+  return torch.from_numpy(np.stack(all_tracks, axis=dim))
+
+
 def get_dataset(t, md, seq, masks, mode='stat_only'):
     dataset = []
     t+=183

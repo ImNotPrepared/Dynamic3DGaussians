@@ -1,0 +1,4 @@
+# ninja log v5
+1	17179	1715596989878267502	/data3/zihanwa3/Capstone-DSR/FSGS/submodules/simple-knn/build/temp.linux-x86_64-cpython-38/simple_knn.o	f21fa74dca017365
+1	47864	1715597020562149113	/data3/zihanwa3/Capstone-DSR/FSGS/submodules/simple-knn/build/temp.linux-x86_64-cpython-38/ext.o	74a6418ff428f809
+1	72285	1715597044983055732	/data3/zihanwa3/Capstone-DSR/FSGS/submodules/simple-knn/build/temp.linux-x86_64-cpython-38/spatial.o	b273e0dcf4ff04a1
