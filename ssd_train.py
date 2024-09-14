@@ -136,7 +136,7 @@ def get_dataset(t, md, seq, mode='stat_only', clean_img=True, depth_loss=False, 
 
                 feature_root_path='/data3/zihanwa3/Capstone-DSR/Processing/dinov2features/resized_512/' #undist_cam00_670/000000.npy'
                 feature_path = feature_root_path+fn 
-                dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy')))
+                dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2, 0, 1)
                 ### [288, 512, 32]
                 dataset.append({'cam': cam, 'im': im, 'id': 'ssss', 
                 'antimask': anti_mask_tensor, 'depth': depth, 
@@ -155,6 +155,7 @@ def get_dataset(t, md, seq, mode='stat_only', clean_img=True, depth_loss=False, 
 
             fn = md['fn'][t][c]
             im = np.array(copy.deepcopy(Image.open(f"/ssd0/zihanwa3/data_ego/{seq}/ims/{fn}")))
+            print(f"/ssd0/zihanwa3/data_ego/{seq}/ims/{fn}")
             im = torch.tensor(im).float().cuda().permute(2, 0, 1) / 255
             #print(im.max(),im.min())
             im=im.clip(0,1)
@@ -180,7 +181,7 @@ def get_dataset(t, md, seq, mode='stat_only', clean_img=True, depth_loss=False, 
               depth = torch.tensor(depth_map)
               feature_root_path='/data3/zihanwa3/Capstone-DSR/Processing/dinov2features/resized_512/' #undist_cam00_670/000000.npy'
               feature_path = feature_root_path+fn 
-              #dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy').replace('/filled_box_image', '/001122').rep))
+              dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2,0,1)#.replace('/filled_box_image', '/001122').rep))
               dataset.append({'cam': cam, 'feature':dinov2_feature , 'im': im, 'id': len(jpg_filenames)-1400+c, 'depth': depth, 'vis': True}) 
             else:
               dataset.append({'cam': cam, 'feature':dinov2_feature , 'im': im, 'id': c-1400+100, 'vis': True})  
@@ -370,7 +371,7 @@ def initialize_params(seq, md, init_type):
         'log_scales': np.tile(np.log(np.sqrt(mean3_sq_dist))[..., None], (1, 3)),
         'cam_m': np.zeros((max_cams, 3)),
         'cam_c': np.zeros((max_cams, 3)),
-        'semantic_feature': torch.zeros(init_pt_cld.shape[0], 16)#.transpose(1, 2)# .contiguous().float().cuda()
+        'semantic_feature': torch.zeros(init_pt_cld.shape[0], 32)#.transpose(1, 2)# .contiguous().float().cuda()
         # torch::Tensor dL_dsemantic_feature = torch::zeros({P, semantic_feature.size(1), NUM_SEMANTIC_CHANNELS}, means3D.options()); /***/ 
     }
     params = {k: torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True)) for k, v in
@@ -437,9 +438,9 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
         combined_mask = ~torch.logical_or(antimask, antimask)# ~torch.logical_or(default_mask, antimask)
         top_mask = combined_mask.type(torch.uint8)
 
-      gt_feature_map = curr_data['feature'] ### [H, W, Channel]
-
-      feature_map = F.interpolate(feature_map.unsqueeze(0), size=(gt_feature_map.shape[0], gt_feature_map.shape[1]), mode='bilinear', align_corners=True).squeeze(0) ###
+      gt_feature_map = curr_data['feature'].to(im.device) ### [H, W, Channel]
+      print('gt_feature_mapgt_feature_mapgt_feature_map', gt_feature_map.shape)
+      feature_map = F.interpolate(feature_map.unsqueeze(0), size=(gt_feature_map.shape[1], gt_feature_map.shape[2]), mode='bilinear', align_corners=True).squeeze(0) ###
 
       if depth_loss:
         #if H==W:
@@ -481,6 +482,9 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
         #loss_type='pearson' # 'l1 pearson
         if loss_type=='l1':
           losses['im'] += 0.8 * l1_loss_v1(masked_im, masked_curr_data_im) + 0.2 * (1.0 - calc_ssim(masked_im, masked_curr_data_im))
+
+          losses['feature'] +=  l1_loss_v2(feature_map, gt_feature_map)
+
         elif loss_type=='pearson':
           zeros_mask = masked_curr_data_im < -100000
           masked_im_flatten = masked_im[~zeros_mask].flatten()
@@ -488,7 +492,8 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
           pearson_corr = pearson_corrcoef(masked_im_flatten, masked_curr_data_im_flatten)
           pearson_loss = 1 - pearson_corr
           losses['im'] += 0.8 * pearson_loss + 0.2 * (1.0 - calc_ssim(masked_im, masked_curr_data_im))
-          losses['feature'] += 0 
+
+
 
     losses['im'] /= len(curr_datasss)
     #losses['depth'] /= len(curr_datasss)
@@ -497,7 +502,7 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
     variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
 
     loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'depth': 2e-3, 'flow':2e-8,
-                    'feature': 0.0, 'soft_col_cons': 0.00}
+                    'feature': 0.1, 'soft_col_cons': 0.00}
                     
     loss = sum([loss_weights[k] * v for k, v in losses.items()])
     seen = radius > 0
@@ -549,12 +554,13 @@ def initialize_post_first_timestep(params, variables, optimizer, num_knn=20):
         if param_group["name"] in params_to_fix:
             param_group['lr'] = 0.0
     return variables
-def combine_images(image1, depth1, image2, depth2):
+def combine_images(image1, depth1, image2, depth2, feat1=None, feat2=None):
     # Convert depth maps to 3-channel images
 
     # Combine each image and depth side by side
-    combined1 = np.hstack((image1, depth1))
-    combined2 = np.hstack((image2, depth2))
+    combined1 = np.hstack((image1, depth1, feat1))
+    combined2 = np.hstack((image2, depth2, feat2))
+  
     
     # Combine the two combined images in a 2x2 grid
     combined_all = np.vstack((combined1, combined2))
@@ -580,7 +586,7 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400
         directory = '/data3/zihanwa3/Capstone-DSR/Appendix/SR10'
         jpg_filenames = get_jpg_filenames(directory)
 
-        def combine_images(image1, depth1, image2, depth2):
+        def combine_images(image1, depth1, feat1,  image2, depth2, feat2):
 
           
             # Convert depth maps to 3-channel images
@@ -588,8 +594,8 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400
             depth2_3channel = depth2#cv2.cvtColor(depth2, cv2.COLOR_GRAY2RGB)
             
             # Combine each image and depth side by side
-            combined1 = np.hstack((image1, depth1_3channel))
-            combined2 = np.hstack((image2, depth2_3channel))
+            combined1 = np.hstack((image1, depth1_3channel, feat1))
+            combined2 = np.hstack((image2, depth2_3channel, feat2))
             
             # Combine the two combined images in a 2x2 grid
             combined_all = np.vstack((combined1, combined2))
@@ -644,7 +650,8 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400
             gt_depth = cv2.resize(gt_depth, (256, 256), interpolation=cv2.INTER_LINEAR)
 
             
-            im, _, depth, _ = Renderer(raster_settings=cam)(**params2rendervar(params))
+            im, radius, feature_map, depth, _ = Renderer(raster_settings=cam)(**params2rendervar(params))
+
             
             im=im.clip(0,1)
 
@@ -668,9 +675,9 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400
 
             depth = cv2.resize(depth, (256, 256), interpolation=cv2.INTER_LINEAR)
             
-            # Combine image and depth
-            #print(im_wandb.shape, depth.shape)
-            combined = combine_images(gt_im, gt_depth, im_wandb, depth)
+            
+
+            combined = combine_images(gt_im, gt_depth, feature_map, im_wandb, depth, feature_map)
             
             # Log combined image
             wandb.log({
@@ -703,7 +710,8 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400
             gt_depth = cv2.resize(gt_depth, (256, 144), interpolation=cv2.INTER_CUBIC)
 
             
-            im, _, depth, _ = Renderer(raster_settings=cam)(**params2rendervar(params))
+            im, radius, feature_map, depth, _ = Renderer(raster_settings=cam)(**params2rendervar(params))
+
             im=im.clip(0,1)
             
             # Process image
@@ -723,7 +731,7 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400
             
             # Combine image and depth
             #print(im_wandb.shape, depth.shape)
-            combined = combine_images(gt_im, gt_depth, im_wandb, depth)
+            combined = combine_images(gt_im, gt_depth, feature_map, im_wandb, depth, feature_map)
          
             # Log combined image
             wandb.log({
@@ -790,7 +798,7 @@ def train(seq, exp, clean_img, init_type, num_timesteps,
             loss.backward()
             with torch.no_grad():
                 #report_progress(params, dataset[0], i, progress_bar)
-                #report_stat_progress(params, curr_data, i, progress_bar, md)
+                report_stat_progress(params, curr_data, i, progress_bar, md)
                 if is_initial_timestep:
                     params, variables = densify(params, variables, optimizer, i)
                 assert ((params['means3D'].shape[0] == 0) is False)
