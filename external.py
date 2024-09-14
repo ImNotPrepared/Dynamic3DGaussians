@@ -157,7 +157,7 @@ def update_params_and_optimizer(new_params, params, optimizer):
 
 def cat_params_to_optimizer(new_params, params, optimizer):
     for k, v in new_params.items():
-        if k in ['means3D', 'rgb_colors', 'unnorm_rotations', 'seg_colors', 'logit_opacities', 'log_scales']:
+        if k in ['means3D', 'rgb_colors', 'unnorm_rotations', 'seg_colors', 'logit_opacities', 'log_scales', 'semantic_feature']:
           group = [g for g in optimizer.param_groups if g['name'] == k][0]
           stored_state = optimizer.state.get(group['params'][0], None)
           if stored_state is not None:
@@ -174,6 +174,7 @@ def cat_params_to_optimizer(new_params, params, optimizer):
               params[k] = group["params"][0]
         else:
           #print(k, params[k].shape, v.shape)
+          print(k)
           params[k] = (torch.cat((params[k], v.flatten()), dim=0).requires_grad_(False))
 
     return params

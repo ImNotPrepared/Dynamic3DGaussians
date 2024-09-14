@@ -50,6 +50,7 @@ def params2rendervar(params, index=38312):
         'means3D': params['means3D'],
         'colors_precomp': params['rgb_colors'],
         'rotations': torch.nn.functional.normalize(params['unnorm_rotations']),
+        'semantic_feature': params['semantic_feature'],
         'opacities': torch.sigmoid(params['logit_opacities']),
         'scales': torch.exp(params['log_scales']),
         'means2D': torch.zeros_like(params['means3D'], requires_grad=True, device="cuda") + 0,
@@ -130,9 +131,16 @@ def get_dataset(t, md, seq, mode='stat_only', clean_img=True, depth_loss=False, 
                 depth_map = depth_map.astype(np.float32)
                 depth = torch.tensor(depth_map)
                 
-                #print(depth.shape)
+                
                 assert depth.shape[1] ==  depth.shape[0]
-                dataset.append({'cam': cam, 'im': im, 'id': 'ssss', 'antimask': anti_mask_tensor, 'depth': depth, 'vis': True})  
+
+                feature_root_path='/data3/zihanwa3/Capstone-DSR/Processing/dinov2features/resized_512/' #undist_cam00_670/000000.npy'
+                feature_path = feature_root_path+fn 
+                dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy')))
+                ### [288, 512, 32]
+                dataset.append({'cam': cam, 'im': im, 'id': 'ssss', 
+                'antimask': anti_mask_tensor, 'depth': depth, 
+                'feature':dinov2_feature , 'vis': True})  
                 
               else:
                 dataset.append({'cam': cam, 'im': im, 'id': iiiindex, 'antimask': anti_mask_tensor, 'vis': True}) 
@@ -170,10 +178,12 @@ def get_dataset(t, md, seq, mode='stat_only', clean_img=True, depth_loss=False, 
               depth_map[depth_map == np.inf] = 0
               depth_map = depth_map.astype(np.float32)
               depth = torch.tensor(depth_map)
-
-              dataset.append({'cam': cam, 'im': im, 'id': len(jpg_filenames)-1400+c, 'depth': depth, 'vis': True}) 
+              feature_root_path='/data3/zihanwa3/Capstone-DSR/Processing/dinov2features/resized_512/' #undist_cam00_670/000000.npy'
+              feature_path = feature_root_path+fn 
+              #dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy').replace('/filled_box_image', '/001122').rep))
+              dataset.append({'cam': cam, 'feature':dinov2_feature , 'im': im, 'id': len(jpg_filenames)-1400+c, 'depth': depth, 'vis': True}) 
             else:
-              dataset.append({'cam': cam, 'im': im, 'id': c-1400+100, 'vis': True})  
+              dataset.append({'cam': cam, 'feature':dinov2_feature , 'im': im, 'id': c-1400+100, 'vis': True})  
 
 
               
@@ -213,7 +223,7 @@ def initialize_params(seq, md, init_type):
       mean3_sq_dist=[]
       #for c in range(1,5):
       #  mask_path=f'/data3/zihanwa3/Capstone-DSR/Processing/filled_complete/{size}/{int(c)-1}.npz'
-      for c in range(4):
+      for c in range(2):
         mask_path = f'/data3/zihanwa3/Capstone-DSR/Appendix/dust3r/patched_stat_imgs/adhoc_depth/{c+1}.npz'
         depth = torch.tensor(np.load(mask_path)['depth']).float().cuda()
         depth = depth.unsqueeze(0).unsqueeze(0)
@@ -294,7 +304,7 @@ def initialize_params(seq, md, init_type):
       densified=True
       if densified:
           repeated_pt_cld = []
-          for _ in range(4):
+          for _ in range(1):
               noise = np.random.normal(0, 0.001, init_pt_cld.shape)  # Small Gaussian noise
               noisy_pt_cld = init_pt_cld + noise
               repeated_pt_cld.append(noisy_pt_cld)
@@ -360,6 +370,8 @@ def initialize_params(seq, md, init_type):
         'log_scales': np.tile(np.log(np.sqrt(mean3_sq_dist))[..., None], (1, 3)),
         'cam_m': np.zeros((max_cams, 3)),
         'cam_c': np.zeros((max_cams, 3)),
+        'semantic_feature': torch.zeros(init_pt_cld.shape[0], 16)#.transpose(1, 2)# .contiguous().float().cuda()
+        # torch::Tensor dL_dsemantic_feature = torch::zeros({P, semantic_feature.size(1), NUM_SEMANTIC_CHANNELS}, means3D.options()); /***/ 
     }
     params = {k: torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True)) for k, v in
               params.items()}
@@ -376,6 +388,11 @@ def initialize_params(seq, md, init_type):
                  'denom': torch.zeros(params['means3D'].shape[0]).cuda().float()}
     return params, variables
 
+
+
+
+
+
 def initialize_optimizer(params, variables):
     lrs = {
         'means3D': 0.0000014 *  variables['scene_radius'], # 0000014
@@ -386,6 +403,7 @@ def initialize_optimizer(params, variables):
         'log_scales': 0.002,
         'cam_m': 1e-5,
         'cam_c': 1e-5,
+        'semantic_feature': 7e-4
     }
     '''
             'logit_opacities': 0.05,
@@ -400,15 +418,12 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
     losses['im'] = 0
     losses['depth'] = 0 
     losses['flow'] = 0 
+    losses['feature'] = 0.0
     rendervar = params2rendervar(params)
     rendervar['means2D'].retain_grad()
-
-
-
-
     for curr_data in curr_datasss: 
 
-      im, radius, depth_pred, _ = Renderer(raster_settings=curr_data['cam'])(**rendervar)
+      im, radius, feature_map, depth_pred, _ = Renderer(raster_settings=curr_data['cam'])(**rendervar)
       curr_id = curr_data['id']
       im=im.clip(0,1)
       H, W =im.shape[1], im.shape[2]
@@ -416,12 +431,15 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
       top_mask[:, :]=1
 
 
-      import torchvision.transforms.functional as F
+      
       if 'antimask' in curr_data.keys():
         antimask=curr_data['antimask'].to(im.device)
         combined_mask = ~torch.logical_or(antimask, antimask)# ~torch.logical_or(default_mask, antimask)
         top_mask = combined_mask.type(torch.uint8)
 
+      gt_feature_map = curr_data['feature'] ### [H, W, Channel]
+
+      feature_map = F.interpolate(feature_map.unsqueeze(0), size=(gt_feature_map.shape[0], gt_feature_map.shape[1]), mode='bilinear', align_corners=True).squeeze(0) ###
 
       if depth_loss:
         #if H==W:
@@ -470,6 +488,7 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
           pearson_corr = pearson_corrcoef(masked_im_flatten, masked_curr_data_im_flatten)
           pearson_loss = 1 - pearson_corr
           losses['im'] += 0.8 * pearson_loss + 0.2 * (1.0 - calc_ssim(masked_im, masked_curr_data_im))
+          losses['feature'] += 0 
 
     losses['im'] /= len(curr_datasss)
     #losses['depth'] /= len(curr_datasss)
@@ -478,7 +497,7 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
     variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
 
     loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'depth': 2e-3, 'flow':2e-8,
-                    'soft_col_cons': 0.00}
+                    'feature': 0.0, 'soft_col_cons': 0.00}
                     
     loss = sum([loss_weights[k] * v for k, v in losses.items()])
     seen = radius > 0
@@ -729,7 +748,7 @@ def report_progress(params, data, i, progress_bar, every_i=100):
         wandb.log({"rendered_image": wandb.Image(im_wandb, caption=f"Rendered image at iteration {i}")})
 
 import wandb
-
+ 
 def initialize_wandb(exp_name, seq):
     wandb.init(project="Dynamic3D", name=f"{exp_name}_{seq}", config={
         "experiment_name": exp_name,
@@ -737,7 +756,9 @@ def initialize_wandb(exp_name, seq):
     })
 
 
-def train(seq, exp, clean_img, init_type, num_timesteps, num_iter_initial, num_iter_subsequent, loss_type, depth_loss, debug_mode):
+def train(seq, exp, clean_img, init_type, num_timesteps, 
+    num_iter_initial, num_iter_subsequent, loss_type, depth_loss, 
+    debug_mode, use_feature):
     if clean_img:
         md = json.load(open(f"./data_ego/{seq}/train_meta_f670.json", 'r'))
     else:
@@ -768,8 +789,8 @@ def train(seq, exp, clean_img, init_type, num_timesteps, num_iter_initial, num_i
             stat_dataset=stat_dataset, item=i, loss_type=loss_type, depth_loss=depth_loss)
             loss.backward()
             with torch.no_grad():
-                report_progress(params, dataset[0], i, progress_bar)
-                report_stat_progress(params, curr_data, i, progress_bar, md)
+                #report_progress(params, dataset[0], i, progress_bar)
+                #report_stat_progress(params, curr_data, i, progress_bar, md)
                 if is_initial_timestep:
                     params, variables = densify(params, variables, optimizer, i)
                 assert ((params['means3D'].shape[0] == 0) is False)
@@ -805,6 +826,9 @@ if __name__ == "__main__":
     parser.add_argument('--debug_mode', type=str, default='no', 
     choices=['stat', 'ego', 'no'], help='Initialization type')
 
+    parser.add_argument('--use_feature', type=str, default='yes', 
+    choices=['yes', 'no'], help='Initialization type')
+
     parser.add_argument('--num_timesteps', type=int, default=7, help='Number of timesteps')
     parser.add_argument('--clean_img', type=bool, default=True, help='Whether to use clean images')
     parser.add_argument('--num_iter_initial', type=int, default=int(2.1e4), help='Number of iterations for the initial timestep')
@@ -831,6 +855,7 @@ if __name__ == "__main__":
             loss_type=args.loss_type,  
             depth_loss=args.depth_loss, 
             debug_mode=args.debug_mode,
+            use_feature=args.use_feature
         )
 
         torch.cuda.empty_cache()

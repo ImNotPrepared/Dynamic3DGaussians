@@ -373,7 +373,7 @@ def flow_loss(rendervar):
       mse_loss = nn.MSELoss(reduction='mean')
 
       #print(estimate_flow.shape, gt_flow.shape)
-      losses += mse_loss( , gt_flow)
+      losses += mse_loss(gt_flow , gt_flow)
     return losses
 
 
