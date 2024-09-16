@@ -574,6 +574,30 @@ def vis_depth(depth):
   colored_depth = (plt.cm.plasma(depth_normalized / 255.0)[:, :, :3] * 255).astype(np.uint8)
   return colored_depth
   
+from sklearn.decomposition import PCA
+
+def vis_feature(features):
+    # Check the shape of the features tensor: [C, H, W]
+    shape = features.shape  # (C, H, W)
+    
+    # Reshape the features to a 2D matrix: [H*W, C]
+    # We want to apply PCA across the channels (C), treating each spatial location (H, W) as a sample
+    features = features.reshape(shape[0], -1).T  # Reshape to [H*W, C], with pixels as samples and channels as features
+    
+    # Apply PCA to reduce the number of channels from C to 3 (for RGB)
+    pca = PCA(n_components=3)
+    pca_features = pca.fit_transform(features)  # Result shape will be [H*W, 3]
+    
+    # Normalize the PCA result to range [0, 255] for visualization as RGB
+    pca_features = (pca_features - pca_features.min()) / (pca_features.max() - pca_features.min())
+    pca_features = (pca_features * 255).astype(np.uint8)
+    
+    # Reshape back to the image format: [H, W, 3]
+    pca_features = pca_features.reshape(shape[1], shape[2], 3)
+    
+    return pca_features
+
+
 def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400):
     import matplotlib.pyplot as plt
     if i % every_i == 0:
@@ -587,6 +611,7 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400
         jpg_filenames = get_jpg_filenames(directory)
 
         def combine_images(image1, depth1, feat1,  image2, depth2, feat2):
+            print(feat1.shape)
 
           
             # Convert depth maps to 3-channel images
@@ -674,15 +699,11 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400
             
 
             depth = cv2.resize(depth, (256, 256), interpolation=cv2.INTER_LINEAR)
-            
-            
 
-            combined = combine_images(gt_im, gt_depth, feature_map, im_wandb, depth, feature_map)
-            
-            # Log combined image
-            wandb.log({
-                f"held_out_combined_{item}": wandb.Image(combined, caption=f"Rendered image and depth at iteration {i}")
-            })
+            feature_root_path='/data3/zihanwa3/Capstone-DSR/Processing/dinov2features/' #undist_cam00_670/000000.npy'
+            feature_path = feature_root_path+fn 
+            dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2, 0, 1)
+
 
         for c in range(1400, 1404):
             h, w = md['hw'][c]
@@ -728,10 +749,45 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400
 
             depth = depth.astype(np.uint8)
             depth = cv2.resize(depth, (256, 144), interpolation=cv2.INTER_CUBIC)
+            feature_map=feature_map.detach().cpu()
+        
+            feature_root_path='/data3/zihanwa3/Capstone-DSR/Processing/dinov2features/resized_512/' #undist_cam00_670/000000.npy'
+            feature_path = feature_root_path+fn 
+            dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2, 0, 1)
+            gt_feature_map = vis_feature(dinov2_feature)
+            feature_map=cv2.resize(vis_feature(feature_map.detach().cpu()),  (256, 144), interpolation=cv2.INTER_LINEAR)
             
-            # Combine image and depth
-            #print(im_wandb.shape, depth.shape)
-            combined = combine_images(gt_im, gt_depth, feature_map, im_wandb, depth, feature_map)
+            base_path = '/data3/zihanwa3/Capstone-DSR/Processing/dinov2features/test/'
+            FFuk_maps = []
+            feature_root_path= base_path + 'undist_cam01' #undist_cam00_670/000000.npy'
+            feature_path = feature_root_path+f'/00183.npy' 
+            dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2, 0, 1)
+            gt_feature_map = vis_feature(dinov2_feature)
+            
+            FFuk_maps.append(gt_feature_map)
+
+            feature_root_path= base_path + 'undist_cam02' #undist_cam00_670/000000.npy'
+            feature_path = feature_root_path+f'/00183.npy' 
+            dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2, 0, 1)
+            gt_feature_map = vis_feature(dinov2_feature)
+ 
+            FFuk_maps.append(gt_feature_map)
+
+            feature_root_path= base_path + 'undist_cam03' #undist_cam00_670/000000.npy'
+            feature_path = feature_root_path+f'/00183.npy' 
+            dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2, 0, 1)
+            gt_feature_map = vis_feature(dinov2_feature)
+
+            FFuk_maps.append(gt_feature_map)
+
+            feature_root_path= base_path + 'undist_cam04' #undist_cam00_670/000000.npy'
+            feature_path = feature_root_path+f'/00183.npy' 
+            dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2, 0, 1)
+            gt_feature_map = vis_feature(dinov2_feature)
+
+            FFuk_maps.append(gt_feature_map)
+
+            combined = combine_images(FFuk_maps[0], FFuk_maps[1], FFuk_maps[3], FFuk_maps[2], FFuk_maps[3], FFuk_maps[3])
          
             # Log combined image
             wandb.log({
