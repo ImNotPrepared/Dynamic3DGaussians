@@ -404,7 +404,7 @@ def initialize_optimizer(params, variables):
         'log_scales': 0.002,
         'cam_m': 1e-5,
         'cam_c': 1e-5,
-        'semantic_feature': 7e-4
+        'semantic_feature': 7e-2
     }
     '''
             'logit_opacities': 0.05,
