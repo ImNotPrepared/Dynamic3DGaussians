@@ -29,6 +29,9 @@ near, far = 1e-7, 50.0
 view_scale = 1
 
 
+
+
+
 def vis_depth(depth):
   depth = np.array(depth)
   depth_normalized = (depth - depth.min()) / (depth.max() - depth.min()) * 255.0
@@ -43,9 +46,6 @@ def render_wander_path(c2w):
   hwf = c2w[:, 4:5]
   num_frames = 50
   max_disp = 48.0
-import numpy as np
-
-import numpy as np
 
 import numpy as np
 C0 = 0.28209479177387814

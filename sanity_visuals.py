@@ -40,11 +40,11 @@ def combine_images(image1, depth1, feat1,  image2, depth2, feat2):
     return combined_all
 
 
-base_path = '/data3/zihanwa3/Capstone-DSR/Processing/dinov2features/test/'
+base_path = '/data3/zihanwa3/Capstone-DSR/Processing/dinov2features/resized_512_registered/'
 
 def retrieve_feat_map(seq, ts):
   feature_root_path= base_path + seq #undist_cam00_670/000000.npy'
-  feature_path = feature_root_path+f'/00{str(ts)}.npy' 
+  feature_path = feature_root_path+f'/{ts:05d}.npy'
   dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2, 0, 1)
   gt_feature_map = (dinov2_feature)
   print('feature_shape', gt_feature_map.shape)
@@ -107,8 +107,9 @@ def vis_feature(features, mask=None):
     
     return pca_features_image
 
+import os
 
-for ts in [183, 294]:
+for ts in range(1400):
   FFuk_maps = []
   dyn_masks = []
   FFuk_maps.append(retrieve_feat_map('undist_cam01', ts))
@@ -128,11 +129,17 @@ for ts in [183, 294]:
 
       # Save the masked feature map
       masked_image = Image.fromarray(masked_feat_map)
-      masked_image.save(f'./sanity_visuals/masked_feat_map_{ts}_{idx+1}.png')
+
+      base_base_path='/data3/zihanwa3/Capstone-DSR/Processing/dinov2features/pca_visuals/'+f'{idx+1}'
+
+      if not os.path.exists(base_base_path):
+        os.makedirs(base_base_path)
+
+      masked_image.save(base_base_path+f'/masked_feat_map_{ts}.png')
 
       # Save the unmasked feature map
-      unmasked_image = Image.fromarray(unmasked_feat_map)
-      unmasked_image.save(f'./sanity_visuals/unmasked_feat_map_{ts}_{idx+1}.png')
+      #unmasked_image = Image.fromarray(unmasked_feat_map)
+      #unmasked_image.save(f'./sanity_visuals/unmasked_feat_map_{ts}_{idx+1}.png')
 
   combined = combine_images(FFuk_maps[0], FFuk_maps[1], FFuk_maps[3], FFuk_maps[2], FFuk_maps[3], FFuk_maps[3])
 

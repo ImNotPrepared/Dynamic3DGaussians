@@ -3,6 +3,7 @@ import os
 import open3d as o3d
 import numpy as np
 from diff_gaussian_rasterization import GaussianRasterizationSettings as Camera
+import torch.nn.functional as F
 
 C0 = 0.28209479177387814
 def rgb_to_spherical_harmonic(rgb):
@@ -12,7 +13,29 @@ def rgb_to_spherical_harmonic(rgb):
 def spherical_harmonic_to_rgb(sh):
     return sh*C0 + 0.5
 
+def masked_mse_loss(pred, gt, mask=None, normalize=False, quantile: float = 1.0):
+    mask = mask.unsqueeze(0) 
 
+    resized_mask = F.interpolate(mask, size=(288, 512), mode='nearest')
+
+    mask = resized_mask.squeeze(0)[:1, ...] # (3, h, w)
+    sum_loss = F.mse_loss(pred, gt, reduction="none").mean(dim=0, keepdim=True)
+
+
+    quantile_mask = (
+        (sum_loss < torch.quantile(sum_loss, quantile)).squeeze(0)
+        if quantile < 1
+        else torch.ones_like(sum_loss, dtype=torch.bool).squeeze(-1)
+    )
+    ndim = sum_loss.shape[-1]
+
+    print(sum_loss.shape, mask.shape)
+    if normalize:
+        return torch.sum((sum_loss * mask)[quantile_mask]) / (
+            ndim * torch.sum(mask[quantile_mask]) + 1e-8
+        )
+    else:
+        return torch.mean((sum_loss * mask)[quantile_mask])
 
 def save_ply_splat(path, means, scales, rotations, rgbs, opacities, normals=None):
     if normals is None:

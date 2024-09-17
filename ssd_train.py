@@ -11,7 +11,7 @@ from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 import matplotlib.pyplot as plt
 from gsplat.rendering import rasterization_inria_wrapper
 from helpers import setup_camera, l1_loss_v1, l1_loss_v2, weighted_l2_loss_v1, weighted_l2_loss_v2, quat_mult, \
-    o3d_knn, params2cpu, save_params, save_params_progressively
+    o3d_knn, params2cpu, save_params, save_params_progressively, masked_mse_loss
 from external import calc_ssim, calc_psnr, build_rotation, densify, update_params_and_optimizer
 import cv2
 import torch.nn.functional as F
@@ -482,8 +482,8 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
         #loss_type='pearson' # 'l1 pearson
         if loss_type=='l1':
           losses['im'] += 0.8 * l1_loss_v1(masked_im, masked_curr_data_im) + 0.2 * (1.0 - calc_ssim(masked_im, masked_curr_data_im))
-
-          losses['feature'] +=  l1_loss_v2(feature_map, gt_feature_map)
+          ## def masked_mse_loss(pred, gt, mask=None, normalize=True, quantile: float = 1.0)
+          losses['feature'] +=  masked_mse_loss(feature_map, gt_feature_map, mask=top_mask)
 
         elif loss_type=='pearson':
           zeros_mask = masked_curr_data_im < -100000
@@ -502,7 +502,7 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
     variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
 
     loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'depth': 2e-3, 'flow':2e-8,
-                    'feature': 0.1, 'soft_col_cons': 0.00}
+                    'feature': 1e-4, 'soft_col_cons': 0.00}
                     
     loss = sum([loss_weights[k] * v for k, v in losses.items()])
     seen = radius > 0
@@ -755,7 +755,7 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400
             feature_path = feature_root_path+fn 
             dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2, 0, 1)
             gt_feature_map = vis_feature(dinov2_feature)
-            feature_map=cv2.resize(vis_feature(feature_map.detach().cpu()),  (256, 144), interpolation=cv2.INTER_LINEAR)
+            feature_map=cv2.resize(vis_feature(feature_map.detach().cpu()),  (512, 288), interpolation=cv2.INTER_LINEAR)
             
             base_path = '/data3/zihanwa3/Capstone-DSR/Processing/dinov2features/test/'
             FFuk_maps = []
@@ -787,7 +787,7 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400
 
             FFuk_maps.append(gt_feature_map)
 
-            combined = combine_images(FFuk_maps[0], FFuk_maps[1], FFuk_maps[3], FFuk_maps[2], FFuk_maps[3], FFuk_maps[3])
+            combined = combine_images(FFuk_maps[0], FFuk_maps[1], FFuk_maps[3], FFuk_maps[2], feature_map, feature_map)
          
             # Log combined image
             wandb.log({
@@ -854,7 +854,7 @@ def train(seq, exp, clean_img, init_type, num_timesteps,
             loss.backward()
             with torch.no_grad():
                 #report_progress(params, dataset[0], i, progress_bar)
-                report_stat_progress(params, curr_data, i, progress_bar, md)
+                report_stat_progress(params, curr_data, i, progress_bar, md, every_i=100)
                 if is_initial_timestep:
                     params, variables = densify(params, variables, optimizer, i)
                 assert ((params['means3D'].shape[0] == 0) is False)
