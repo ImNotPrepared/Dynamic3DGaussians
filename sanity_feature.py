@@ -184,7 +184,7 @@ def get_dataset(t, md, seq, mode='stat_only', clean_img=True, depth_loss=False, 
               dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2,0,1)#.replace('/filled_box_image', '/001122').rep))
               dataset.append({'cam': cam, 'feature':im , 'im': im, 'id': len(jpg_filenames)-1400+c, 'depth': depth, 'vis': True}) 
             else:
-              dataset.append({'cam': cam, 'feature':dinov2_feature , 'im': im, 'id': c-1400+100, 'vis': True})  
+              dataset.append({'cam': cam, 'feature':im , 'im': im, 'id': c-1400+100, 'vis': True})  
 
 
               
@@ -404,7 +404,7 @@ def initialize_optimizer(params, variables):
         'log_scales': 0.002,
         'cam_m': 1e-5,
         'cam_c': 1e-5,
-        'semantic_feature': 7e-2
+        'semantic_feature': 0.0000028
     }
     '''
             'logit_opacities': 0.05,
@@ -425,6 +425,7 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
     for curr_data in curr_datasss: 
 
       im, radius, feature_map, depth_pred, _ = Renderer(raster_settings=curr_data['cam'])(**rendervar)
+      gt_feature_map = curr_data['feature'].to(im.device) ### [H, W, Channel]
       curr_id = curr_data['id']
       im=im.clip(0,1)
       H, W =im.shape[1], im.shape[2]
@@ -437,11 +438,11 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
         antimask=curr_data['antimask'].to(im.device)
         combined_mask = ~torch.logical_or(antimask, antimask)# ~torch.logical_or(default_mask, antimask)
         top_mask = combined_mask.type(torch.uint8)
-
-      gt_feature_map = curr_data['feature'].to(im.device) ### [H, W, Channel]
-      print('gt_feature_mapgt_feature_mapgt_feature_map', gt_feature_map.shape)
+      print('before', feature_map.shape)
       feature_map = F.interpolate(feature_map.unsqueeze(0), size=(gt_feature_map.shape[1], gt_feature_map.shape[2]), mode='bilinear', align_corners=True).squeeze(0) ###
 
+
+      print('after', feature_map.shape)
       if depth_loss:
         #if H==W:
         if depth_loss=='l1':
@@ -483,7 +484,9 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
         if loss_type=='l1':
           losses['im'] += 0.8 * l1_loss_v1(masked_im, masked_curr_data_im) + 0.2 * (1.0 - calc_ssim(masked_im, masked_curr_data_im))
           ## def masked_mse_loss(pred, gt, mask=None, normalize=True, quantile: float = 1.0)
-          losses['feature'] +=  masked_mse_loss(feature_map, gt_feature_map, mask=top_mask)
+          losses['feature'] +=  0.8 * l1_loss_v1(feature_map, gt_feature_map) + 0.2 * (1.0 - calc_ssim(feature_map, gt_feature_map))
+          
+          #masked_mse_loss(feature_map, gt_feature_map, mask=top_mask)
 
         elif loss_type=='pearson':
           zeros_mask = masked_curr_data_im < -100000
@@ -554,17 +557,7 @@ def initialize_post_first_timestep(params, variables, optimizer, num_knn=20):
         if param_group["name"] in params_to_fix:
             param_group['lr'] = 0.0
     return variables
-def combine_images(image1, depth1, image2, depth2, feat1=None, feat2=None):
-    # Convert depth maps to 3-channel images
 
-    # Combine each image and depth side by side
-    combined1 = np.hstack((image1, depth1, feat1))
-    combined2 = np.hstack((image2, depth2, feat2))
-  
-    
-    # Combine the two combined images in a 2x2 grid
-    combined_all = np.vstack((combined1, combined2))
-    return combined_all
 
 def vis_depth(depth):
   depth = np.array(depth)
@@ -610,101 +603,13 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400
         directory = '/data3/zihanwa3/Capstone-DSR/Appendix/SR10'
         jpg_filenames = get_jpg_filenames(directory)
 
-        def combine_images(image1, depth1, feat1,  image2, depth2, feat2):
-            print(feat1.shape)
-
-          
-            # Convert depth maps to 3-channel images
-            depth1_3channel = depth1#cv2.cvtColor(depth1, cv2.COLOR_GRAY2RGB)
-            depth2_3channel = depth2#cv2.cvtColor(depth2, cv2.COLOR_GRAY2RGB)
-            
+        def combine_images(image1, depth1, depth2):
             # Combine each image and depth side by side
-            combined1 = np.hstack((image1, depth1_3channel, feat1))
-            combined2 = np.hstack((image2, depth2_3channel, feat2))
-            
-            # Combine the two combined images in a 2x2 grid
-            combined_all = np.vstack((combined1, combined2))
-            return combined_all
+            combined1 = np.hstack((image1, depth1, depth2))
 
-        # Your existing loop
-        for item, c in enumerate(jpg_filenames):
+            return combined1
 
-            t = 0
-            h, w = md['hw'][c]
-            k, w2c = md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
-            cam = setup_camera(w, h, k, w2c, near=near, far=far)
-            fn = md['fn'][t][c] # mask_{fn.split('/')[0]}
-            gt_im = np.array(copy.deepcopy(Image.open(f"/ssd0/zihanwa3/data_ego/cmu_bike/ims/undist_data/{fn}")))
-            #print(fn)
-            gt_im = torch.tensor(gt_im).float().cuda().permute(2, 0, 1) / 255
-
-            mask_path='/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/masked_cmu_bike/triangular_mask.jpg'
-            default_mask= torch.tensor(cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE), device=gt_im.device)
-            default_mask = default_mask>1e-5
-            try:
-              mask_path=f"/data3/zihanwa3/Capstone-DSR/Appendix/SR_49_clean_mask/{fn.split('/')[-1].replace('.jpg', '.npz')}"
-              mask = np.load(mask_path)['mask'][0]
-            except:
-              continue
-
-            transform = transforms.ToTensor()
-            mask_tensor = transform(mask).squeeze(0).to(gt_im.device)
-            antimask = mask_tensor > 1e-5
-            combined_mask = ~torch.logical_or(antimask, antimask)# ~torch.logical_or(default_mask, antimask)
-            top_mask = combined_mask.type(torch.uint8)
-
-
-            gt_im *= top_mask
-            gt_im = torch.rot90(gt_im, k=-1, dims=(1, 2))
-            gt_im = gt_im.permute(1, 2, 0).cpu().numpy() * 255
-            gt_im = gt_im.astype(np.uint8)
-
-            gt_im = cv2.resize(gt_im, (256, 256), interpolation=cv2.INTER_LINEAR)
-
-            gt_depth=f'/data3/zihanwa3/Capstone-DSR/Processing/da_v2_disp/0/disp_{c}.npz'
-            gt_depth = torch.tensor(np.load(gt_depth)['depth_map']).float().cuda()  #/ 255
-            gt_depth=torch.rot90(gt_depth, k=-1, dims=(0, 1))
-            gt_depth=torch.clamp(gt_depth, min=near, max=far)
-
-            gt_depth = gt_depth.cpu().numpy() #* 30 #* 255
-            gt_depth=vis_depth(gt_depth)
-            ## 
-
-            #gt_depth = gt_depth.astype(np.uint8)
-            
-            gt_depth = cv2.resize(gt_depth, (256, 256), interpolation=cv2.INTER_LINEAR)
-
-            
-            im, radius, feature_map, depth, _ = Renderer(raster_settings=cam)(**params2rendervar(params))
-
-            
-            im=im.clip(0,1)
-
-
-                    # Process image
-            im = torch.rot90(im, k=-1, dims=(1, 2))
-
-            im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
-            im_wandb = im_wandb.astype(np.uint8)
-            im_wandb = cv2.resize(im_wandb, (256, 256), interpolation=cv2.INTER_LINEAR)
-            
-            # Process depth
-            depth = torch.rot90(depth, k=-1, dims=(1, 2))[0]
-            #print('real', depth.shape)
-            depth = vis_depth(1/np.clip(depth.detach().cpu().numpy(), 0.001, 5))
-
-
-            #depth = depth.permute(1, 2, 0).cpu().numpy() * 255
-            depth = depth.astype(np.uint8)
-            
-
-            depth = cv2.resize(depth, (256, 256), interpolation=cv2.INTER_LINEAR)
-
-            feature_root_path='/data3/zihanwa3/Capstone-DSR/Processing/dinov2features/' #undist_cam00_670/000000.npy'
-            feature_path = feature_root_path+fn 
-            dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2, 0, 1)
-
-
+        t= 0
         for c in range(1400, 1404):
             h, w = md['hw'][c]
             k, w2c = md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
@@ -716,20 +621,6 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400
             gt_im = gt_im.permute(1, 2, 0).cpu().numpy() * 255
             gt_im = gt_im.astype(np.uint8)
             gt_im = cv2.resize(gt_im, (256, 144), interpolation=cv2.INTER_CUBIC)
-
-            #gt_depth=f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(c)-1399}/depth_0.npz'
-            #gt_depth = torch.tensor(np.load(gt_depth)['depth_map']).float().cuda()  #/ 255
-
-
-            gt_depth=f'/data3/zihanwa3/Capstone-DSR/Processing/da_v2_disp/0/disp_{c}.npz'
-            gt_depth = torch.tensor(np.load(gt_depth)['depth_map']).float().cuda()  #/ 255
-
-            gt_depth = gt_depth.cpu().numpy() #* 30 #* 255
-            gt_depth=vis_depth(gt_depth)
-
-            gt_depth = gt_depth.astype(np.uint8)
-            gt_depth = cv2.resize(gt_depth, (256, 144), interpolation=cv2.INTER_CUBIC)
-
             
             im, radius, feature_map, depth, _ = Renderer(raster_settings=cam)(**params2rendervar(params))
 
@@ -738,56 +629,19 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400
             # Process image
             im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
             im_wandb = im_wandb.astype(np.uint8)
-            im_wandb = cv2.resize(im_wandb, (256, 144), interpolation=cv2.INTER_CUBIC)
+            im_wandb_real = cv2.resize(im_wandb, (256, 144), interpolation=cv2.INTER_CUBIC)
             
-            # Process depth
-            #depth = torch.rot90(depth, k=-1, dims=(1, 2))
-            # Process depth
-            depth = depth[0]
-            #print('real', depth.shape)
-            depth = vis_depth(1/np.clip(depth.detach().cpu().numpy(), 0.1, 5))
-
-            depth = depth.astype(np.uint8)
-            depth = cv2.resize(depth, (256, 144), interpolation=cv2.INTER_CUBIC)
-            feature_map=feature_map.detach().cpu()
         
-            feature_root_path='/data3/zihanwa3/Capstone-DSR/Processing/dinov2features/resized_512/' #undist_cam00_670/000000.npy'
-            feature_path = feature_root_path+fn 
-            dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2, 0, 1)
-            gt_feature_map = vis_feature(dinov2_feature)
-            feature_map=cv2.resize(vis_feature(feature_map.detach().cpu()),  (512, 288), interpolation=cv2.INTER_LINEAR)
+
+            im=feature_map.clip(0,1)
             
-            base_path = '/data3/zihanwa3/Capstone-DSR/Processing/dinov2features/test/'
-            FFuk_maps = []
-            feature_root_path= base_path + 'undist_cam01' #undist_cam00_670/000000.npy'
-            feature_path = feature_root_path+f'/00183.npy' 
-            dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2, 0, 1)
-            gt_feature_map = vis_feature(dinov2_feature)
-            
-            FFuk_maps.append(gt_feature_map)
+            # Process image
+            im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
+            im_wandb = im_wandb.astype(np.uint8)
+            im_wandb = cv2.resize(im_wandb, (256, 144), interpolation=cv2.INTER_CUBIC)
+          
 
-            feature_root_path= base_path + 'undist_cam02' #undist_cam00_670/000000.npy'
-            feature_path = feature_root_path+f'/00183.npy' 
-            dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2, 0, 1)
-            gt_feature_map = vis_feature(dinov2_feature)
- 
-            FFuk_maps.append(gt_feature_map)
-
-            feature_root_path= base_path + 'undist_cam03' #undist_cam00_670/000000.npy'
-            feature_path = feature_root_path+f'/00183.npy' 
-            dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2, 0, 1)
-            gt_feature_map = vis_feature(dinov2_feature)
-
-            FFuk_maps.append(gt_feature_map)
-
-            feature_root_path= base_path + 'undist_cam04' #undist_cam00_670/000000.npy'
-            feature_path = feature_root_path+f'/00183.npy' 
-            dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2, 0, 1)
-            gt_feature_map = vis_feature(dinov2_feature)
-
-            FFuk_maps.append(gt_feature_map)
-
-            combined = combine_images(FFuk_maps[0], FFuk_maps[1], FFuk_maps[3], FFuk_maps[2], feature_map, feature_map)
+            combined = combine_images(gt_im, im_wandb_real, im_wandb)
          
             # Log combined image
             wandb.log({

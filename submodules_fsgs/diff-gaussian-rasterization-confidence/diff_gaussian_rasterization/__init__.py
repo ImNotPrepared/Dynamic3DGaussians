@@ -61,7 +61,8 @@ class _RasterizeGaussians(torch.autograd.Function):
         raster_settings,
         label
     ):
-
+    #def forward(self, means3D, means2D, opacities, shs = None, semantic_feature = None, colors_precomp = None, scales = None, rotations = None, cov3D_precomp = None, label=1):
+     
         # Restructure arguments the way that the C++ lib expects them
         args = (
             raster_settings.bg, 
@@ -206,7 +207,7 @@ class GaussianRasterizer(nn.Module):
             
         return visible
     ## changed here
-    def forward(self, means3D, means2D, opacities, shs = None, semantic_feature = None, colors_precomp = None, scales = None, rotations = None, cov3D_precomp = None, label=1):
+    def forward(self, means3D, means2D, opacities=None, shs = None, semantic_feature = None, colors_precomp = None, scales = None, rotations = None, cov3D_precomp = None, label=1):
         
         raster_settings = self.raster_settings
 
@@ -243,3 +244,19 @@ class GaussianRasterizer(nn.Module):
             label
         )
 
+'''
+def rasterize_gaussians(
+    means3D,
+    means2D,
+    sh,
+    colors_precomp,
+    semantic_feature, ###
+    opacities,
+    scales,
+    rotations,
+    cov3Ds_precomp,
+    raster_settings,
+    label
+):
+
+'''

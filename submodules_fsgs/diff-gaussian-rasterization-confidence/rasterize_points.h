@@ -57,7 +57,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor, torch::Tensor, torch::Te
   const float c_y, //added
 	const float tan_fovx, 
 	const float tan_fovy,
-    const torch::Tensor& dL_dout_color,
+  const torch::Tensor& dL_dout_color,
   const torch::Tensor& dL_dout_feature, /***//******************/
 	const torch::Tensor& dL_dout_depth,
 	const torch::Tensor& dL_dout_alpha,

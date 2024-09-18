@@ -15,8 +15,8 @@ def spherical_harmonic_to_rgb(sh):
 
 def masked_mse_loss(pred, gt, mask=None, normalize=False, quantile: float = 1.0):
     mask = mask.unsqueeze(0) 
-
-    resized_mask = F.interpolate(mask, size=(gt.shape[0], gt.shape[1]), mode='nearest')
+    print(mask.shape)
+    resized_mask = F.interpolate(mask, size=(gt.shape[1], gt.shape[2]), mode='nearest')
 
     mask = resized_mask.squeeze(0)[:1, ...] # (3, h, w)
     sum_loss = F.mse_loss(pred, gt, reduction="none").mean(dim=0, keepdim=True)
