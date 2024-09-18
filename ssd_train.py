@@ -502,7 +502,7 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
     variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
 
     loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 2.0, 'depth': 2e-3, 'flow':2e-8,
-                    'feature': 1e-4, 'soft_col_cons': 0.00}
+                    'feature': 0.1, 'soft_col_cons': 0.00}
                     
     loss = sum([loss_weights[k] * v for k, v in losses.items()])
     seen = radius > 0

@@ -137,8 +137,6 @@ if __name__ == '__main__':
   num_bases = len(ids)
   sampled_centers = sampled_centers[:, ids]
 
-
-
   dists2centers = torch.norm(means_cano[:, None] - sampled_centers, dim=-1)
   motion_coefs = 10 * torch.exp(-dists2centers)
 
@@ -155,7 +153,11 @@ if __name__ == '__main__':
   transfms = bases.compute_transforms(ts, coefs)
 
 
+
   ##### transfms transforms (G, B, 3, 4)
+  ### G: num, B: motion bases 3: 4: 
+  ### rotmats = cont_6d_to_rmat(rots)  # (K, B, 3, 3)
+  ### return torch.cat([rotmats, transls[..., None]], dim=-1)
   ###   fg means (G, 3) pad -> (G, 4)
   ##### returned (G, B, 4)
   positions = torch.einsum(
