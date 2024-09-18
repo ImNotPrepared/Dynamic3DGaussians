@@ -229,49 +229,63 @@ def flow_visualize(predicted_flows, img1_batch, index=None):
 
 def warp_flow(flow, displacement):
     """
-    Warp a flow map by a given displacement (another flow).
-    This adjusts the flow by the amount of displacement.
-    
+    Warp the optical flow using the given displacement.
+
     Args:
-        flow: Flow map to warp, shape (H, W, 2)
-        displacement: Displacement flow to warp by, shape (H, W, 2)
-    
+        flow (torch.Tensor): The flow to be warped, of shape (H, W, 2).
+        displacement (torch.Tensor): The displacement to warp the flow, of shape (H, W, 2).
+
     Returns:
-        Warped flow map
+        torch.Tensor: The warped flow, of shape (H, W, 2).
     """
     H, W, _ = flow.shape
-    grid_x, grid_y = torch.meshgrid(torch.arange(H), torch.arange(W), indexing='ij')
-    
-    # Current pixel locations (H, W, 2)
-    grid = torch.stack((grid_x, grid_y), dim=-1).float().to(flow.device)
-    
-    # Add displacement to grid
-    displaced_grid = grid + displacement
-    
-    # Warp the flow
-    warped_flow = flow + displaced_grid
-    
+
+    # Create a grid of coordinates in pixel space
+    grid_y, grid_x = torch.meshgrid(torch.arange(H), torch.arange(W))
+    grid_x = grid_x.float()
+    grid_y = grid_y.float()
+    grid = torch.stack((grid_x, grid_y), 2)  # (H, W, 2)
+
+    # Compute the coordinates where to sample from flow
+    sample_coords = grid + displacement  # (H, W, 2)
+
+    # Normalize coordinates to [-1, 1] for grid_sample
+    sample_coords_x = 2 * (sample_coords[:, :, 0] / (W - 1)) - 1
+    sample_coords_y = 2 * (sample_coords[:, :, 1] / (H - 1)) - 1
+    sample_grid = torch.stack((sample_coords_x, sample_coords_y), 2)  # (H, W, 2)
+
+    # Expand dimensions to match grid_sample requirements
+    sample_grid = sample_grid.unsqueeze(0)  # (1, H, W, 2)
+    flow = flow.permute(2, 0, 1).unsqueeze(0)  # (1, 2, H, W)
+
+    # Use grid_sample to warp the flow
+    warped_flow = F.grid_sample(
+        flow,
+        sample_grid,
+        mode='bilinear',
+        padding_mode='border',
+        align_corners=True
+    )
+
+    # Remove batch and channel dimensions
+    warped_flow = warped_flow[0].permute(1, 2, 0)  # (H, W, 2)
     return warped_flow
 
 def accumulate_flows(flows):
     """
-    Accumulate multiple flows to get a single flow from start to end.
-    
-    Args:
-        flows: List of flow maps from one frame to the next (e.g., [Flow(a->b), Flow(b->c), ...])
-    
-    Returns:
-        Accumulated flow from the first to the last frame.
-    """
-    accumulated_flow = flows[0]  # Start with the flow from a to b
-    
-    for i in range(1, len(flows)):
-        # Warp the next flow by the accumulated flow so far
-        warped_flow = warp_flow(flows[i], accumulated_flow)
-        accumulated_flow += warped_flow
-    
-    return accumulated_flow
+    Accumulate a list of flows into a single flow.
 
+    Args:
+        flows (list of torch.Tensor): A list of flow tensors to accumulate.
+
+    Returns:
+        torch.Tensor: The accumulated flow.
+    """
+    accumulated_flow = flows[0].clone()
+    for i in range(1, len(flows)):
+        warped_flow = warp_flow(flows[i], accumulated_flow)
+        accumulated_flow = accumulated_flow + warped_flow
+    return accumulated_flow
 
 def flow_loss(rendervar):
 

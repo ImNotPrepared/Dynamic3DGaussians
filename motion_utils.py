@@ -136,7 +136,6 @@ if __name__ == '__main__':
   ids = ids[counts > 100]
   num_bases = len(ids)
   sampled_centers = sampled_centers[:, ids]
-
   dists2centers = torch.norm(means_cano[:, None] - sampled_centers, dim=-1)
   motion_coefs = 10 * torch.exp(-dists2centers)
 
