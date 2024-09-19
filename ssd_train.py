@@ -146,7 +146,11 @@ def get_dataset(t, md, seq, mode='stat_only', clean_img=True, depth_loss=False, 
                 dataset.append({'cam': cam, 'im': im, 'id': iiiindex, 'antimask': anti_mask_tensor, 'vis': True}) 
 
       if debug_mode == 'no' or debug_mode == 'stat':
-        for c in range(1400, 1404):
+        if debug_mode == 'stat':
+          num=1
+        else:
+          num=4
+        for c in range(1400, 1400+num):
             h, w = md['hw'][c]
           
 
@@ -179,9 +183,12 @@ def get_dataset(t, md, seq, mode='stat_only', clean_img=True, depth_loss=False, 
               depth_map[depth_map == np.inf] = 0
               depth_map = depth_map.astype(np.float32)
               depth = torch.tensor(depth_map)
-              feature_root_path='/data3/zihanwa3/Capstone-DSR/Processing/dinov2features/resized_512/' #undist_cam00_670/000000.npy'
-              feature_path = feature_root_path+fn 
+              feature_root_path='/data3/zihanwa3/Capstone-DSR/Processing/dinov2features/resized_512_registered/' #undist_cam00_670/000000.npy'
+              feature_path = feature_root_path+'undist_cam0'+fn 
               dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2,0,1)#.replace('/filled_box_image', '/001122').rep))
+              #### torch.Size([32, 288, 512])
+              dinov2_feature = F.normalize(dinov2_feature, p=2, dim=0)
+              #print(dinov2_feature.shape)
               dataset.append({'cam': cam, 'feature':dinov2_feature , 'im': im, 'id': len(jpg_filenames)-1400+c, 'depth': depth, 'vis': True}) 
             else:
               dataset.append({'cam': cam, 'feature':dinov2_feature , 'im': im, 'id': c-1400+100, 'vis': True})  
@@ -404,7 +411,7 @@ def initialize_optimizer(params, variables):
         'log_scales': 0.002,
         'cam_m': 1e-5,
         'cam_c': 1e-5,
-        'semantic_feature': 7e-2
+        'semantic_feature': 7e-4
     }
     '''
             'logit_opacities': 0.05,
@@ -439,9 +446,10 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
         top_mask = combined_mask.type(torch.uint8)
 
       gt_feature_map = curr_data['feature'].to(im.device) ### [H, W, Channel]
+      
       print('gt_feature_mapgt_feature_mapgt_feature_map', gt_feature_map.shape)
       feature_map = F.interpolate(feature_map.unsqueeze(0), size=(gt_feature_map.shape[1], gt_feature_map.shape[2]), mode='bilinear', align_corners=True).squeeze(0) ###
-
+      feature_map = F.normalize(feature_map, p=2, dim=0)
       if depth_loss:
         #if H==W:
         if depth_loss=='l1':

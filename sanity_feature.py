@@ -305,7 +305,7 @@ def initialize_params(seq, md, init_type):
       densified=True
       if densified:
           repeated_pt_cld = []
-          for _ in range(1):
+          for _ in range(10):
               noise = np.random.normal(0, 0.001, init_pt_cld.shape)  # Small Gaussian noise
               noisy_pt_cld = init_pt_cld + noise
               repeated_pt_cld.append(noisy_pt_cld)
@@ -371,7 +371,7 @@ def initialize_params(seq, md, init_type):
         'log_scales': np.tile(np.log(np.sqrt(mean3_sq_dist))[..., None], (1, 3)),
         'cam_m': np.zeros((max_cams, 3)),
         'cam_c': np.zeros((max_cams, 3)),
-        'semantic_feature': init_pt_cld[:, :3]
+        'semantic_feature': init_pt_cld[:, 3:6]
         # torch::Tensor dL_dsemantic_feature = torch::zeros({P, semantic_feature.size(1), NUM_SEMANTIC_CHANNELS}, means3D.options()); /***/ 
     }
     params = {k: torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True)) for k, v in
@@ -404,7 +404,7 @@ def initialize_optimizer(params, variables):
         'log_scales': 0.002,
         'cam_m': 1e-5,
         'cam_c': 1e-5,
-        'semantic_feature': 0.0000028
+        'semantic_feature':0.00028,
     }
     '''
             'logit_opacities': 0.05,
@@ -504,7 +504,7 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
 
     variables['means2D'] = rendervar['means2D']  # Gradient only accum from colour render for densification
 
-    loss_weights = {'im': 0.0, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 0, 'depth': 0, 'flow':0,
+    loss_weights = {'im': 0.1, 'rigid': 0.0, 'rot': 0.0, 'iso': 0.0, 'floor': 0.0, 'bg': 0, 'depth': 0, 'flow':0,
                     'feature': 0.1, 'soft_col_cons': 0.00}
                     
     loss = sum([loss_weights[k] * v for k, v in losses.items()])
@@ -620,26 +620,21 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400
             gt_im = torch.tensor(gt_im).float().cuda().permute(2, 0, 1) / 255
             gt_im = gt_im.permute(1, 2, 0).cpu().numpy() * 255
             gt_im = gt_im.astype(np.uint8)
-            gt_im = cv2.resize(gt_im, (256, 144), interpolation=cv2.INTER_CUBIC)
-            
+
             im, radius, feature_map, depth, _ = Renderer(raster_settings=cam)(**params2rendervar(params))
 
             im=im.clip(0,1)
             
-            # Process image
             im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
             im_wandb = im_wandb.astype(np.uint8)
-            im_wandb_real = cv2.resize(im_wandb, (256, 144), interpolation=cv2.INTER_CUBIC)
-            
-        
+            im_wandb_real = im_wandb
 
             im=feature_map.clip(0,1)
             
             # Process image
             im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
             im_wandb = im_wandb.astype(np.uint8)
-            im_wandb = cv2.resize(im_wandb, (256, 144), interpolation=cv2.INTER_CUBIC)
-          
+
 
             combined = combine_images(gt_im, im_wandb_real, im_wandb)
          
@@ -708,7 +703,7 @@ def train(seq, exp, clean_img, init_type, num_timesteps,
             loss.backward()
             with torch.no_grad():
                 #report_progress(params, dataset[0], i, progress_bar)
-                report_stat_progress(params, curr_data, i, progress_bar, md, every_i=100)
+                report_stat_progress(params, curr_data, i, progress_bar, md, every_i=700)
                 if is_initial_timestep:
                     params, variables = densify(params, variables, optimizer, i)
                 assert ((params['means3D'].shape[0] == 0) is False)
