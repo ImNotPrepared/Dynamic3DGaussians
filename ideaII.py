@@ -225,41 +225,51 @@ def flow_visualize(predicted_flows, img1_batch, index=None):
         plt.close()
 
     plot(grid)
-
+import torch.nn.functional as Fun
 
 def warp_flow(flow, displacement):
     """
     Warp the optical flow using the given displacement.
 
     Args:
-        flow (torch.Tensor): The flow to be warped, of shape (H, W, 2).
-        displacement (torch.Tensor): The displacement to warp the flow, of shape (H, W, 2).
+        flow (torch.Tensor): The flow to be warped, of shape (2, H, W).
+        displacement (torch.Tensor): The displacement to warp the flow, of shape (2, H, W).
 
     Returns:
-        torch.Tensor: The warped flow, of shape (H, W, 2).
+        torch.Tensor: The warped flow, of shape (2, H, W).
     """
-    H, W, _ = flow.shape
+    # Ensure flow and displacement are in (2, H, W) format
+    assert flow.ndimension() == 3 and flow.shape[0] == 2, "Flow must have shape (2, H, W)"
+    assert displacement.ndimension() == 3 and displacement.shape[0] == 2, "Displacement must have shape (2, H, W)"
+
+    _, H, W = flow.shape
 
     # Create a grid of coordinates in pixel space
-    grid_y, grid_x = torch.meshgrid(torch.arange(H), torch.arange(W))
-    grid_x = grid_x.float()
-    grid_y = grid_y.float()
-    grid = torch.stack((grid_x, grid_y), 2)  # (H, W, 2)
+    device = flow.device
+    dtype = flow.dtype
+    grid_y, grid_x = torch.meshgrid(
+        torch.arange(H, device=device, dtype=dtype),
+        torch.arange(W, device=device, dtype=dtype),
+        indexing='ij'  # Ensure meshgrid uses matrix indexing
+    )
+    grid = torch.stack((grid_x, grid_y), 0)  # (2, H, W)
 
     # Compute the coordinates where to sample from flow
-    sample_coords = grid + displacement  # (H, W, 2)
+    sample_coords = grid + displacement  # (2, H, W)
 
     # Normalize coordinates to [-1, 1] for grid_sample
-    sample_coords_x = 2 * (sample_coords[:, :, 0] / (W - 1)) - 1
-    sample_coords_y = 2 * (sample_coords[:, :, 1] / (H - 1)) - 1
-    sample_grid = torch.stack((sample_coords_x, sample_coords_y), 2)  # (H, W, 2)
+    sample_coords_x = 2 * (sample_coords[0, :, :] / (W - 1)) - 1  # (H, W)
+    sample_coords_y = 2 * (sample_coords[1, :, :] / (H - 1)) - 1  # (H, W)
+    sample_grid = torch.stack((sample_coords_x, sample_coords_y), dim=2)  # (H, W, 2)
 
     # Expand dimensions to match grid_sample requirements
     sample_grid = sample_grid.unsqueeze(0)  # (1, H, W, 2)
-    flow = flow.permute(2, 0, 1).unsqueeze(0)  # (1, 2, H, W)
+
+    # Prepare flow for grid_sample: (N, C, H, W)
+    flow = flow.unsqueeze(0)  # (1, 2, H, W)
 
     # Use grid_sample to warp the flow
-    warped_flow = F.grid_sample(
+    warped_flow = Fun.grid_sample(
         flow,
         sample_grid,
         mode='bilinear',
@@ -267,8 +277,8 @@ def warp_flow(flow, displacement):
         align_corners=True
     )
 
-    # Remove batch and channel dimensions
-    warped_flow = warped_flow[0].permute(1, 2, 0)  # (H, W, 2)
+    # Remove batch dimension
+    warped_flow = warped_flow[0]  # (2, H, W)
     return warped_flow
 
 def accumulate_flows(flows):
@@ -376,7 +386,7 @@ def flow_loss(rendervar):
       # estimate_flow = (torch.sum(estimate_flows, dim=0)).to(device)
 
       # Get the total flow from a to e
-      estimate_flow = accumulate_flows(flows)
+      estimate_flow = accumulate_flows(estimate_flows)
 
       flow_visualize(estimate_flows, psd_ims_1, index=(idxxx1-1400))
       #print(estimate_flow.shape)
@@ -387,7 +397,7 @@ def flow_loss(rendervar):
       mse_loss = nn.MSELoss(reduction='mean')
 
       #print(estimate_flow.shape, gt_flow.shape)
-      losses += mse_loss(gt_flow , gt_flow)
+      losses += mse_loss(estimate_flow , gt_flow)
     return losses
 
 

@@ -15,7 +15,7 @@ from torchmetrics.functional.regression import pearson_corrcoef
 import torchvision.transforms as transforms
 
 import torch.nn.functional as F
-
+from dyn_train import MotionBases, feature_bases
 
 near, far = 1e-7, 5e1
 #### [t, c, ...]\\
@@ -58,7 +58,14 @@ def get_dataset(t, md, seq, masks, mode='stat_only'):
 
         mask_path = f'/data3/zihanwa3/Capstone-DSR/Processing/sam_v2_dyn_mask/{c}/dyn_mask_{t}.npz'
         mask = np.load(mask_path)['dyn_mask']
-        dataset.append({'cam': cam, 'im': im, 'id': c-1,  'mask': mask, 'depth': depth, 'vis': True}) 
+
+
+        feature_root_path='/data3/zihanwa3/Capstone-DSR/Processing/dinov2features/resized_512/'
+        feature_path = feature_root_path+fn 
+        dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2, 0, 1)
+
+
+        dataset.append({'cam': cam, 'feature': dinov2_feature, 'im': im, 'id': c-1,  'mask': mask, 'depth': depth, 'vis': True}) 
 
       print(f'Loaded Dataset of Length {len(dataset)}') 
       return dataset
@@ -214,8 +221,8 @@ def params2rendervar(params, index=38312):
         'opacities': torch.sigmoid(params['logit_opacities']),
         'scales': torch.exp(params['log_scales']),
         'means2D': torch.zeros_like(params['means3D'], requires_grad=True, device="cuda") + 0,
-        'label': params['label']
-
+        'label': params['label'],
+        'semantic_feature': params['semantic_feature'],
     }
     return rendervar
 
@@ -295,6 +302,7 @@ def initialize_new_params(new_pt_cld):
         'seg_colors': np.stack((seg, np.zeros_like(seg), 1 - seg), -1),
         'logit_opacities': logit_opacities,
         'log_scales':  np.tile(np.log(np.sqrt(mean3_sq_dist))[..., None], (1, 3)),
+        'semantic_feature': torch.zeros(new_pt_cld.shape[0], 32)
     }
     params = {k: torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True)) for k, v in
               params.items()}
@@ -308,6 +316,7 @@ def initialize_optimizer(params, variables):
         'seg_colors':0.0,
         'logit_opacities': 0.002,
         'log_scales': 0.005,
+        'semantic_feature':0.003,
         'cam_m': 1e-5,
         'cam_c': 1e-5,
     }
@@ -435,6 +444,7 @@ def initialize_post_first_timestep(params, variables, optimizer, num_knn=20):
     neighbor_sq_dist, neighbor_indices = o3d_knn(init_fg_pts.detach().cpu().numpy(), num_knn)
     neighbor_weight = np.exp(-2000 * neighbor_sq_dist)
     neighbor_dist = np.sqrt(neighbor_sq_dist)
+    #variables
     variables["neighbor_indices"] = torch.tensor(neighbor_indices).cuda().long().contiguous()
     variables["neighbor_weight"] = torch.tensor(neighbor_weight).cuda().float().contiguous()
     variables["neighbor_dist"] = torch.tensor(neighbor_dist).cuda().float().contiguous()
@@ -477,14 +487,29 @@ def train(seq, exp):
     reversed_range = list(range(111, -1, -5))
 
 
-    #masks = []
-    #for mask_i in range(1, 5):
-      #print(np.load(f'/data3/zihanwa3/Capstone-DSR/Processing/sam_v2_dyn_mask/dyn_masks_{mask_i}.npz'))
-    #  mask = np.load(f'/data3/zihanwa3/Capstone-DSR/Processing/sam_v2_dyn_mask/dyn_masks_{mask_i}.npz')['dyn_masks']
-    #  masks.append(mask)
-    #masks = np.concatenate(masks)
+    means = fg_params['means']
+    feats = fg_params['semantic_features']
+
+    coefs, means = feature_bases(means, feats)
+    device='cpu'
+    num_bases = 49 ### ready_to_tune
+    num_frames = len(reversed_range)
+    id_rot, rot_dim = torch.tensor([1.0, 0.0, 0.0, 0.0], device=device), 4
+    init_rots = id_rot.reshape(1, 1, rot_dim).repeat(num_bases, num_frames, 1)
+    init_ts = torch.zeros(num_bases, num_frames, 3, device=device)
+    
+    bases = MotionBases(init_rots, init_ts) ## [B, F, 3/4]
+    transfms = bases.compute_transforms(ts, coefs)
+    positions = torch.einsum(
+        "pnij,pj->pni",
+        transfms,
+        F.pad(means, (0, 1), value=1.0),
+    )
+    ### transfms positions [N, F, 3]
 
     for t in reversed_range:
+
+        xyz_t =  positions[:, t]
         t=int(t)
         dataset = get_dataset(t, md, seq, masks=None, mode='ego_only')
         stat_dataset = None
@@ -492,6 +517,8 @@ def train(seq, exp):
         is_initial_timestep = (int(t) == 111)
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
+
+
         num_iter_per_timestep = int(4.9e3) if is_initial_timestep else int(2.1e3)
         progress_bar = tqdm(range(int(num_iter_per_timestep)), desc=f"timestep {t}")
         for i in tqdm(range(num_iter_per_timestep), desc=f"timestep {t}"):
@@ -499,11 +526,10 @@ def train(seq, exp):
 
             loss, variables, losses = get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=stat_dataset, org_params=None)
             loss.backward()
-            #variables['means2D'].grad[:38312, :] =  0
 
             with torch.no_grad():
                 #report_progress(params, dataset[0], i, progress_bar)
-                report_stat_progress(params, t, i, progress_bar, md)
+                #report_stat_progress(params, t, i, progress_bar, md)
                 #if is_initial_timestep:
                 #    params, variables = densify(params, variables, optimizer, i)
                 assert ((params['means3D'].shape[0]==0) is False)
