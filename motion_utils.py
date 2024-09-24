@@ -1,7 +1,7 @@
 import math
 
 import torch
-from sklearn.cluster import SpectralClustering
+from sklearn.cluster import SpectralClustering, AgglomerativeClustering
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -36,12 +36,16 @@ class MotionBases(nn.Module):
             }
         )
 
-    def compute_transforms(self, ts: torch.Tensor, coefs: torch.Tensor) -> torch.Tensor:
+    def compute_transforms(self, ts: torch.Tensor, coefs: torch.Tensor, inverse=True) -> torch.Tensor:
         """
         :param ts (B)
         :param coefs (G, K)
         returns transforms (G, B, 3, 4)
         """
+        #result_dict = {key: (0, len(reversed_range)) for key in reversed_range}
+        ts = list(range(9))
+
+        print('MotionShape', self.params["transls"].shape, self.params["rots"].shape, coefs.shape)
         transls = self.params["transls"][:, ts]  # (K, B, 3)
         rots = self.params["rots"][:, ts]  # (K, B, 6)
         transls = torch.einsum("pk,kni->pni", coefs, transls)
@@ -67,15 +71,45 @@ def similarity_mapping(feats, K=10):
     ### k means labels and 
     model.fit(vel_dirs)
     labels = model.labels_'''
+    import open3d as o3d
+    import numpy as np
+
+    feats = feats.clone().detach().cpu()
     feats_normalized = feats / feats.norm(dim=1, keepdim=True) # Normalize the feature vectors
-    cos_sim_matrix = torch.mm(feats_normalized, feats_normalized.t())
-    cos_sim_matrix_np = cos_sim_matrix.cpu().numpy()
+    feats_normalized = torch.ones_like(feats_normalized) - torch.randn(feats_normalized.shape)
+
+    print(feats_normalized.shape)
+    from tqdm import tqdm
+    batch_size = 40000
+    N = feats_normalized.size(0)  # Number of rows in feats_normalized
+    cos_sim_matrix = torch.zeros(N, N, device=feats_normalized.device) 
+    cos_sim_matrix = torch.mm(feats_normalized, feats_normalized.t()) # Pre-allocate the full similarity matrix on the same device
+    #for i in tqdm(range(0, N, batch_size)):
+      # Determine the size of the current batch
+    #  end_idx = min(i + batch_size, N)  # Ensure we don't go out of bounds
+    #  cos_sim_batch = torch.mm(feats_normalized, feats_normalized.t()[:, i:end_idx])
+      
+      # Copy the result to the appropriate slice of the cos_sim_matrix
+    #  cos_sim_matrix[:, i:end_idx] = cos_sim_batch
 
 
+    K = 49  # Number of clusters you want
+    spectral = SpectralClustering(n_clusters=K, affinity='precomputed', random_state=42)
+    labels = spectral.fit_predict(cos_sim_matrix)
+
+    '''
+    for i in tqdm(range(0, N, batch_size)):
+        # Determine the size of the current batch
+        end_idx = min(i + batch_size, N)  # Ensure we don't go out of bounds
+        cos_sim_batch = torch.mm(feats_normalized, feats_normalized.t()[:, i:end_idx])
+        
+        # Copy the result to the appropriate slice of the cos_sim_matrix
+        cos_sim_matrix[:, i:end_idx] = cos_sim_batch
     
     # Perform spectral clustering
     clustering = SpectralClustering(n_clusters=K, affinity='precomputed', random_state=42)
-    labels = clustering.fit_predict(cos_sim_matrix_np)
+    labels = clustering.fit_predict(cos_sim_matrix)
+    '''
     labels_expanded = torch.tensor(labels)
     
     return labels_expanded
@@ -85,14 +119,7 @@ def similarity_mapping(feats, K=10):
 ##
 
 def feature_bases(means, feats, cano_t=49, mode='kmeans'):
-    '''
-    Args: 
-        means --> [N, 3] torch.Tensor
-        feats --> [N, E] torch.Tensor
 
-    Returns:
-        output --> [N, B] torch.Tensor
-    '''
     labels = similarity_mapping(feats)
 
     means_cano = means# means[:, cano_t].clone()  # [num_gaussians, 3]
@@ -127,7 +154,7 @@ def feature_bases(means, feats, cano_t=49, mode='kmeans'):
 
     #### definie motion coeff
 
-    motion_coef_activation = lambda x: F.softmax(x, dim=-1)
+
     #if motion_coefs is not None:
     #  params_dict["motion_coefs"] = nn.Parameter(motion_coefs)
 

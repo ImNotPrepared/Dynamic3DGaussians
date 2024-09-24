@@ -15,12 +15,12 @@ from torchmetrics.functional.regression import pearson_corrcoef
 import torchvision.transforms as transforms
 
 import torch.nn.functional as F
-from dyn_train import MotionBases, feature_bases
+from motion_utils import MotionBases, feature_bases
 
 near, far = 1e-7, 5e1
 #### [t, c, ...]\\
 
-def load_target_tracks(
+'''def load_target_tracks(
   self, query_index: int, target_indices: list[int], dim: int = 1
 ):
   """
@@ -35,7 +35,7 @@ def load_target_tracks(
       path = f"{self.tracks_dir}/{q_name}_{t_name}.npy"
       tracks = np.load(path).astype(np.float32)
       all_tracks.append(tracks)
-  return torch.from_numpy(np.stack(all_tracks, axis=dim))
+  return torch.from_numpy(np.stack(all_tracks, axis=dim))'''
 
 
 def get_dataset(t, md, seq, masks, mode='stat_only'):
@@ -79,9 +79,24 @@ def get_batch(todo_dataset, dataset):
 
 
 def initialize_params(seq, md, exp):
+    path='/data3/zihanwa3/Capstone-DSR/Processing/3D/filtered_person.npz'
+    new_pt_cld = np.load(path)["data"]
+    print('dyn_len', len(new_pt_cld))
+    densified=True
+    if densified:
+        repeated_pt_cld = []
+        for _ in range(1):
+            noise = np.random.normal(0, 0.001, new_pt_cld.shape)   
+            noisy_pt_cld = new_pt_cld + noise
+            repeated_pt_cld.append(noisy_pt_cld)
+  
+    new_pt_cld = np.vstack(repeated_pt_cld)
+    print('i dont wanna gg', new_pt_cld.shape)
+    new_params = initialize_new_params(new_pt_cld)
+
     # init_pt_cld_before_dense init_pt_cld
-    ckpt_path=f'./old_output/no-depth/{seq}/params.npz'
-    params = dict(np.load(ckpt_path, allow_pickle=True))
+    # ckpt_path=f'./old_output/no-depth/{seq}/params.npz'
+    params = dict(new_params)
     params = {k: torch.tensor(params[k]).cuda().float().requires_grad_(True) for k in params.keys()}
     cam_centers = np.linalg.inv(md['w2c'][0])[:, :3, 3]  # Get scene radius
     scene_radius = 1.1 * np.max(np.linalg.norm(cam_centers - np.mean(cam_centers, 0)[None], axis=-1))
@@ -92,125 +107,6 @@ def initialize_params(seq, md, exp):
                  'denom': torch.zeros(params['means3D'].shape[0]).cuda().float()}
     return params, variables, scene_radius
 
-
-def report_stat_progress(params, t, i, progress_bar, md, every_i=2100):
-    import matplotlib.pyplot as plt
-
-    if i % every_i == 0:
-        def combine_images(image1, depth1, image2, depth2):
-            # Convert depth maps to 3-channel images
-            depth1_3channel = cv2.cvtColor(depth1, cv2.COLOR_GRAY2RGB)
-            depth2_3channel = cv2.cvtColor(depth2, cv2.COLOR_GRAY2RGB)
-            
-            # Combine each image and depth side by side
-            combined1 = np.hstack((image1, depth1_3channel))
-            combined2 = np.hstack((image2, depth2_3channel))
-            
-            # Combine the two combined images in a 2x2 grid
-            combined_all = np.vstack((combined1, combined2))
-            return combined_all
-
-        t+=183
-        c=0
-        h, w = md['hw'][c]
-        k, w2c = md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
-        cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
-        fn = md['fn'][t][c] # mask_{fn.split('/')[0]}
-        gt_im = np.array(copy.deepcopy(Image.open(f"/ssd0/zihanwa3/data_ego/cmu_bike/ims/{fn}")))
-        gt_im = torch.tensor(gt_im).float().cuda().permute(2, 0, 1) / 255
-        gt_im = torch.rot90(gt_im, k=1, dims=(1, 2))
-        gt_im = gt_im.permute(1, 2, 0).cpu().numpy() * 255
-        gt_im = gt_im.astype(np.uint8)
-
-        gt_im = cv2.resize(gt_im, (256, 256), interpolation=cv2.INTER_LINEAR)
-        gt_depth=f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(c)}/depth_{t}.npz'
-        gt_depth = torch.tensor(np.load(gt_depth)['depth_map']).float().cuda()  #/ 255
-        gt_depth=torch.rot90(gt_depth, k=1, dims=(0, 1))
-        
-        min_val = torch.min(gt_depth)
-        max_val = torch.max(gt_depth)
-        gt_depth = (gt_depth - min_val) / (max_val - min_val)
-        
-        
-        # Scale to range [0, 255]
-        gt_depth = gt_depth * 255.0
-        gt_depth = gt_depth.cpu().numpy() #* 30 #* 255
-        ## 
-
-        gt_depth = gt_depth.astype(np.uint8)
-        
-        gt_depth = cv2.resize(gt_depth, (256, 256), interpolation=cv2.INTER_LINEAR)
-
-        
-        im, _, depth, _ = Renderer(raster_settings=cam)(**params2rendervar(params))
-
-
-                # Process image
-        im = torch.rot90(im, k=-1, dims=(1, 2))
-        im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
-        im_wandb = im_wandb.astype(np.uint8)
-        im_wandb = cv2.resize(im_wandb, (256, 256), interpolation=cv2.INTER_LINEAR)
-        
-        # Process depth
-        depth = torch.rot90(depth, k=-1, dims=(1, 2))
-        min_val = torch.min(depth)
-        max_val = torch.max(depth)
-        depth = (depth - min_val) / (max_val - min_val)
-
-
-        depth = depth.permute(1, 2, 0).cpu().numpy() * 255
-        depth = depth.astype(np.uint8)
-        depth = cv2.resize(depth, (256, 256), interpolation=cv2.INTER_LINEAR)
-        
-        # Combine image and depth
-        #print(im_wandb.shape, depth.shape)
-        combined = combine_images(gt_im, gt_depth, im_wandb, depth)
-        
-        # Log combined image
-        wandb.log({
-            f"ego_{t}": wandb.Image(combined, caption=f"Rendered image and depth at iteration {i}")
-        })
-
-        for c in range(1, 5):
-            h, w = md['hw'][c]
-            k, w2c = md['k'][t][c], np.linalg.inv(md['w2c'][t][c])
-            cam = setup_camera(w, h, k, w2c, near=0.01, far=50)
-            fn = md['fn'][t][c] # mask_{fn.split('/')[0]}
-            
-            gt_im = np.array(copy.deepcopy(Image.open(f"/ssd0/zihanwa3/data_ego/cmu_bike/ims/{fn}")))
-            gt_im = torch.tensor(gt_im).float().cuda().permute(2, 0, 1) / 255
-            gt_im = gt_im.permute(1, 2, 0).cpu().numpy() * 255
-            gt_im = gt_im.astype(np.uint8)
-            gt_im = cv2.resize(gt_im, (256, 144), interpolation=cv2.INTER_CUBIC)
-
-            gt_depth=f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(c)}/depth_{t}.npz'
-            gt_depth = torch.tensor(np.load(gt_depth)['depth_map']).float().cuda()  #/ 255
-            gt_depth = gt_depth.cpu().numpy() ##* 30 #* 255
-
-            gt_depth = gt_depth.astype(np.uint8)
-            gt_depth = cv2.resize(gt_depth, (256, 144), interpolation=cv2.INTER_CUBIC)
-
-            
-            im, _, depth, _ = Renderer(raster_settings=cam)(**params2rendervar(params))
-            im=im.clip(0,1)
-            im_wandb = im.permute(1, 2, 0).cpu().numpy() * 255
-            im_wandb = im_wandb.astype(np.uint8)
-            im_wandb = cv2.resize(im_wandb, (256, 144), interpolation=cv2.INTER_CUBIC)
-            
-            # Process depth
-            #depth = torch.rot90(depth, k=-1, dims=(1, 2))
-            depth = depth.permute(1, 2, 0).cpu().numpy() * 255
-            depth = depth.astype(np.uint8)
-            depth = cv2.resize(depth, (256, 144), interpolation=cv2.INTER_CUBIC)
-            
-            # Combine image and depth
-            #print(im_wandb.shape, depth.shape)
-            combined = combine_images(gt_im, gt_depth, im_wandb, depth)
-         
-            # Log combined image
-            wandb.log({
-                f"stat_combined_{c}_{t}": wandb.Image(combined, caption=f"Rendered image and depth at iteration {i}")
-            })
 
 def params2rendervar(params, index=38312):
     ## [org, new_params(person)]
@@ -243,7 +139,7 @@ def add_new_gaussians(params, variables, scene_radius):
     densified=True
     if densified:
         repeated_pt_cld = []
-        for _ in range(7):
+        for _ in range(1):
             noise = np.random.normal(0, 0.001, new_pt_cld.shape)   
             noisy_pt_cld = new_pt_cld + noise
             repeated_pt_cld.append(noisy_pt_cld)
@@ -261,6 +157,7 @@ def add_new_gaussians(params, variables, scene_radius):
       params_no_grad = params[k]#.requires_grad_(False)  # 使 params[k] 不需要梯度
       if len(params_no_grad.shape) == 3:
         params_no_grad=params_no_grad[0]
+      print(k)
       new_params[k] = torch.cat((params_no_grad, v), dim=0)
 
 
@@ -306,6 +203,7 @@ def initialize_new_params(new_pt_cld):
     }
     params = {k: torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True)) for k, v in
               params.items()}
+
     return params
 
 def initialize_optimizer(params, variables):
@@ -327,6 +225,9 @@ def initialize_optimizer(params, variables):
     param_groups = [{'params': [v], 'name': k, 'lr': lrs[k]} for k, v in params.items() if k in lrs.keys()]
     return torch.optim.Adam(param_groups, lr=0.0, eps=1e-15)
 
+
+
+######### 
 def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=None, org_params=None):
     losses = {}
     rendervar = params2rendervar(params)
@@ -472,49 +373,70 @@ def train(seq, exp):
     #if os.path.exists(f"./output/{exp}/{seq}"):
     #    print(f"Experiment '{exp}' for sequence '{seq}' already exists. Exiting.")
     #    return
-    md = json.load(open(f"./data_ego/{seq}/Dy_train_meta.json", 'r'))  # metadata
+    device='cpu'
+    num_bases = 49 ### ready_to_tune
+    reversed_range = list(range(111, -1, -3))
+    num_frames = len(reversed_range)
 
+    md = json.load(open(f"./data_ego/{seq}/Dy_train_meta.json", 'r'))  # metadata
     num_timesteps = len(md['fn'])
     params, variables, sriud = initialize_params(seq, md, exp)
 
-    params, variables =  add_new_gaussians(params, variables, sriud)
-    optimizer = initialize_optimizer(params, variables)
-    output_params = []
-
-    initialize_wandb(exp, seq)
-    org_params=initialize_params(seq, md, exp)
-
-    reversed_range = list(range(111, -1, -5))
-
-
-    means = fg_params['means']
-    feats = fg_params['semantic_features']
-
+    means, feats = params['means3D'], params['semantic_feature']
     coefs, means = feature_bases(means, feats)
-    device='cpu'
-    num_bases = 49 ### ready_to_tune
-    num_frames = len(reversed_range)
+    ## coefs is Params
+    #### initialize motion bases [irrelavent]
     id_rot, rot_dim = torch.tensor([1.0, 0.0, 0.0, 0.0], device=device), 4
     init_rots = id_rot.reshape(1, 1, rot_dim).repeat(num_bases, num_frames, 1)
     init_ts = torch.zeros(num_bases, num_frames, 3, device=device)
-    
     bases = MotionBases(init_rots, init_ts) ## [B, F, 3/4]
-    transfms = bases.compute_transforms(ts, coefs)
-    positions = torch.einsum(
-        "pnij,pj->pni",
-        transfms,
-        F.pad(means, (0, 1), value=1.0),
-    )
+
+    params['means3D'] = means
+    ### add coefs to params
+    params['motion_coefs'] = coefs
+    
+    params = {k: torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True)) for k, v in
+              params.items()}
+
+    ### add static gaussians
+    motion_coef_activation = lambda x: F.softmax(x, dim=-1)
+    params, variables = add_new_gaussians(params, variables, sriud)
+
+    output_params = []
+
+    initialize_wandb(exp, seq)
+    # org_params=initialize_params(seq, md, exp)
+
+
+    optimizer = initialize_optimizer(params, variables)
+
+
     ### transfms positions [N, F, 3]
+    ### temporal_windows = [reversed_range[i:i+10] for i in range(0, 110, 10)]
+
+
+    transfms = bases.compute_transforms(reversed_range, coefs)
+    # transfms = bases.compute_transforms(ts, coefs)
+
 
     for t in reversed_range:
+      #### revised part
+      
+      positions = torch.einsum(
+          "pnij,pj->pni",
+          transfms,
+          F.pad(means, (0, 1), value=1.0),
+      )
 
+      for t in temporal_windows:
         xyz_t =  positions[:, t]
         t=int(t)
         dataset = get_dataset(t, md, seq, masks=None, mode='ego_only')
         stat_dataset = None
         todo_dataset = []
         is_initial_timestep = (int(t) == 111)
+        params['means3D'] = xyz_t
+
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
 

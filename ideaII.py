@@ -9,45 +9,8 @@ from io import BytesIO
 import matplotlib.pyplot as plt
 import wandb
 from PIL import Image
-# Initialize your camera intrinsics (K) and extrinsics (Ex) for each camera
-def load_camera_params():
-    # Define K and Ex for pseudo cameras
-    K = {
-        "0": np.array([[fx0, 0, cx0], [0, fy0, cy0], [0, 0, 1]]),
-        "a": np.array([[fxa, 0, cxa], [0, fya, cya], [0, 0, 1]]),
-        "b": np.array([[fxb, 0, cxb], [0, fyb, cyb], [0, 0, 1]]),
-        "c": np.array([[fxc, 0, cxc], [0, fyc, cyc], [0, 0, 1]]),
-        "1": np.array([[fx1, 0, cx1], [0, fy1, cy1], [0, 0, 1]])
-    }
-
-    Ex = {
-        "0": np.eye(4),  # Identity matrix for origin
-        "a": get_extrinsic_matrix_for_a(),  # Assume we have a function to get Ex
-        "b": get_extrinsic_matrix_for_b(),
-        "c": get_extrinsic_matrix_for_c(),
-        "1": get_extrinsic_matrix_for_1(),
-    }
-    return K, Ex
 
 
-
-# Calculate flow using RAFT from image 0 to any other pseudo cam
-def calculate_raft_flow(raft_model, img1, img2):
-    flow = raft_model.estimate_flow(img1, img2)
-    return flow
-
-# Calculate ground-truth flow using depth, camera extrinsics, and intrinsics
-def calculate_gt_flow(K_src, K_dst, Ex_src, Ex_dst, depth_src):
-    # Apply pinhole camera model to get flow vectors
-    # src -> dst using depth and camera matrices
-    flow = gt_flow_from_depth_and_cameras(K_src, K_dst, Ex_src, Ex_dst, depth_src)
-    return flow
-
-# Loss function comparing RAFT and ground-truth flow
-def compute_loss(flow_raft, flow_gt):
-    loss = torch.mean((flow_raft - flow_gt) ** 2)  # L2 loss
-  
-    return loss
 
 # Convert pixel coordinates to 3D points in camera coordinates using depth and 3x3 intrinsics
 def pixel_to_camera_coordinates(depth, intrinsics):
@@ -297,25 +260,22 @@ def accumulate_flows(flows):
         accumulated_flow = accumulated_flow + warped_flow
     return accumulated_flow
 
+from pytorch3d.transforms import quaternion_to_matrix, Translate
+import torch
+import json
+import cv2
+import copy
+from PIL import Image
+
+
 def flow_loss(rendervar):
 
     total_loss = 0.0
-    from pytorch3d.transforms import quaternion_to_matrix, Translate
-    import torch
-    import json
-    import cv2
-    import copy
-    from PIL import Image
-    # Example usage with torch tensors
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print('where stuck 1')
     seq='cmu_bike'
     md = json.load(open(f"/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/{seq}/train_meta.json", 'r'))
     scales_shifts = [(0.0031744423, 0.15567338), (0.0025279315, 0.106763005), (0.0048902677, 0.16312718), (0.0037271702, 0.10191789), (0.002512292, 0.114545256), (0.0029944833, 0.10527076), (0.003602787, 0.14336547), (0.003638356, 0.1080856), (0.0054704025, 0.057398915), (0.0022690576, 0.117439255), (0.002312136, 0.077383846), (0.0054023797, 0.089054525), (0.0050647566, 0.101514965), (0.0036501177, 0.13153434), (0.0008889911, 0.44202688), (0.0025493288, 0.109814465), (0.0024664444, 0.112163335), (-0.00016438629, 0.40732577), (0.0032442464, 0.19807495), (0.0048282435, 0.09168023), (0.002856112, 0.15053965), (0.0020215507, 0.107855394), (0.0030028797, 0.14278293), (0.0024490638, 0.13038686), (0.0024990174, 0.12481204), (0.0057816333, 0.077005506), (0.0019591942, 0.10089706), (0.0013262086, 0.42674613), (0.004126527, 0.13687198), (0.0022844346, 0.097172886), (0.0062575513, 0.12489089), (-0.00014962265, 0.38713253), (0.00086679566, 0.25387546), (0.0021814466, 0.10047534), (0.002019625, 0.10706337), (0.0037505955, 0.13279462), (0.0035237654, 0.12734117), (0.0019494797, 0.14369084), (0.00056177535, 0.28072894), (0.0018662697, 0.10288732), (0.00591453, 0.053784877), (0.002294414, 0.23004633), (0.0014106235, 0.14460064), (0.0013034015, 0.24912238), (0.0015928176, 0.17974892)]
-    near, far = 1e-7, 7e0
-
-    #for lis in [[1400, 1401, 1402, 1403]]: 
-
+    near, far = 1e-7, 7e1
     def data_prep(lis):
       for iiiindex, c in sorted(enumerate(lis)):
         t=0
@@ -324,8 +284,6 @@ def flow_loss(rendervar):
         raw_image = cv2.imread(filename)
         h, w = md['hw'][c]
         k, w2c =  torch.tensor(md['k'][t][c]), np.linalg.inv(md['w2c'][t][c])
-
-        #cam = setup_camera(w, h, k, w2c, near=near, far=far)
 
         fn = md['fn'][t][c]
         im = np.array(copy.deepcopy(Image.open(f"/ssd0/zihanwa3/data_ego/{seq}/ims/{fn}")))
@@ -404,4 +362,14 @@ def flow_loss(rendervar):
 
 
 if __name__ == "__main__":
-    main()
+    rendervar = {
+    'means3D': params['means3D'],
+    'colors_precomp': params['rgb_colors'],
+    'rotations': torch.nn.functional.normalize(params['unnorm_rotations']),
+    'semantic_feature': params['semantic_feature'],
+    'opacities': torch.sigmoid(params['logit_opacities']),
+    'scales': torch.exp(params['log_scales']),
+    'means2D': torch.zeros_like(params['means3D'], requires_grad=True, device="cuda") + 0,
+    'label': params['label']
+
+}
