@@ -31,10 +31,11 @@ class MotionBases(nn.Module):
 
         self.params = nn.ParameterDict(
             {
-                "rots": nn.Parameter(rots),
-                "transls": nn.Parameter(transls),
+                "rots": nn.Parameter(rots.float().contiguous().cuda(), requires_grad=True),
+                "transls": nn.Parameter(transls.float().contiguous().cuda(), requires_grad=True),
             }
         )
+
 
     def compute_transforms(self, ts: torch.Tensor, coefs: torch.Tensor, inverse=True) -> torch.Tensor:
         """
@@ -45,7 +46,7 @@ class MotionBases(nn.Module):
         #result_dict = {key: (0, len(reversed_range)) for key in reversed_range}
         ts = list(range(9))
 
-        print('MotionShape', self.params["transls"].shape, self.params["rots"].shape, coefs.shape)
+        print('MotionShape', self.params["transls"].device, self.params["rots"].shape, coefs.shape, coefs.device)
         transls = self.params["transls"][:, ts]  # (K, B, 3)
         rots = self.params["rots"][:, ts]  # (K, B, 6)
         transls = torch.einsum("pk,kni->pni", coefs, transls)
@@ -135,8 +136,8 @@ def feature_bases(means, feats, cano_t=49, mode='kmeans'):
     )[None]
     scene_center = means_cano.median(dim=0).values
     dists = torch.norm(means_cano - scene_center, dim=-1)
-    dists_th = torch.quantile(dists, 0.95)
-    valid_mask = dists < dists_th
+    dists_th = torch.quantile(dists, 1.0) #######33
+    valid_mask = dists < 1e6 ##########
     means_cano = means_cano[valid_mask]
     ### sampled_centers, num_bases, labels = ###
     #### compute cluster weight

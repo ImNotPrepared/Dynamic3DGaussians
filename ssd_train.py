@@ -421,7 +421,7 @@ def initialize_optimizer(params, variables):
     return torch.optim.Adam(param_groups, lr=0.0, eps=1e-15)
 
 
-def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=None, item=None, loss_type='l1', depth_loss=False):
+def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=None, item=None, loss_type='l1', depth_loss=False, raft_model=None):
     losses = {}
     losses['im'] = 0
     losses['depth'] = 0 
@@ -467,8 +467,8 @@ def get_loss(params, curr_datasss, variables, is_initial_timestep, stat_dataset=
           losses['depth'] += (1 - pearson_corrcoef( ground_truth_depth, (depth_pred)))
       
 
-      if item > 2e3:
-        losses['flow'] += flow_loss(rendervar)
+      if item > 2e3 and raft_model is not None:
+        losses['flow'] += flow_loss(rendervar, raft_model)
 
 
       top_mask = top_mask.unsqueeze(0).repeat(3, 1, 1)
@@ -717,10 +717,6 @@ def report_stat_progress(params, stat_dataset, i, progress_bar, md, every_i=1400
             gt_im = gt_im.astype(np.uint8)
             gt_im = cv2.resize(gt_im, (256, 144), interpolation=cv2.INTER_CUBIC)
 
-            #gt_depth=f'/ssd0/zihanwa3/data_ego/cmu_bike/depth/{int(c)-1399}/depth_0.npz'
-            #gt_depth = torch.tensor(np.load(gt_depth)['depth_map']).float().cuda()  #/ 255
-
-
             gt_depth=f'/data3/zihanwa3/Capstone-DSR/Processing/da_v2_disp/0/disp_{c}.npz'
             gt_depth = torch.tensor(np.load(gt_depth)['depth_map']).float().cuda()  #/ 255
 
@@ -798,6 +794,10 @@ def train(seq, exp, clean_img, init_type, num_timesteps,
 
     initialize_wandb(exp, seq)
 
+    from torchvision.models.optical_flow import raft_large
+    raft_model = raft_large(pretrained=True, progress=False).to(device)
+    raft_model = raft_model.eval()
+
     for t in range(num_timesteps):
         dataset = get_dataset(t, md, seq, mode='ego_only', clean_img=clean_img, depth_loss=depth_loss, debug_mode=debug_mode)
         stat_dataset = None
@@ -814,7 +814,7 @@ def train(seq, exp, clean_img, init_type, num_timesteps,
             curr_data = get_batch(todo_dataset, dataset)
 
             loss, variables, losses = get_loss(params, curr_data, variables, is_initial_timestep, \
-            stat_dataset=stat_dataset, item=i, loss_type=loss_type, depth_loss=depth_loss)
+            stat_dataset=stat_dataset, item=i, loss_type=loss_type, depth_loss=depth_loss, raft_model=raft_model)
             loss.backward()
             with torch.no_grad():
                 #report_progress(params, dataset[0], i, progress_bar)

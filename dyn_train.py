@@ -62,7 +62,7 @@ def get_dataset(t, md, seq, masks, mode='stat_only'):
 
         feature_root_path='/data3/zihanwa3/Capstone-DSR/Processing/dinov2features/resized_512/'
         feature_path = feature_root_path+fn 
-        dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy'))).permute(2, 0, 1)
+        dinov2_feature = torch.tensor(np.load(feature_path.replace('.jpg', '.npy').replace('/undist_data', ''))).permute(2, 0, 1)
 
 
         dataset.append({'cam': cam, 'feature': dinov2_feature, 'im': im, 'id': c-1,  'mask': mask, 'depth': depth, 'vis': True}) 
@@ -93,6 +93,12 @@ def initialize_params(seq, md, exp):
     new_pt_cld = np.vstack(repeated_pt_cld)
     print('i dont wanna gg', new_pt_cld.shape)
     new_params = initialize_new_params(new_pt_cld)
+
+
+
+    new_params['label']=torch.ones(len(new_params['means3D']), requires_grad=False, device="cuda")
+    
+
 
     # init_pt_cld_before_dense init_pt_cld
     # ckpt_path=f'./old_output/no-depth/{seq}/params.npz'
@@ -235,7 +241,7 @@ def get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=Non
     losses['im'] = 0
     losses['depth'] = 0 
 
-    im, radius, depth_pred, _ = Renderer(raster_settings=curr_data['cam'])(**rendervar)
+    im, radius, feature_map, depth_pred, _ = Renderer(raster_settings=curr_data['cam'])(**rendervar)
     curr_id = curr_data['id']
     im=im.clip(0,1)
     H, W =im.shape[1], im.shape[2]
@@ -381,6 +387,7 @@ def train(seq, exp):
     md = json.load(open(f"./data_ego/{seq}/Dy_train_meta.json", 'r'))  # metadata
     num_timesteps = len(md['fn'])
     params, variables, sriud = initialize_params(seq, md, exp)
+    print('---------------1st', len(params['means3D']))
 
     means, feats = params['means3D'], params['semantic_feature']
     coefs, means = feature_bases(means, feats)
@@ -397,10 +404,11 @@ def train(seq, exp):
     
     params = {k: torch.nn.Parameter(torch.tensor(v).cuda().float().contiguous().requires_grad_(True)) for k, v in
               params.items()}
+    print('---------------2nd', len(params['means3D']))
 
     ### add static gaussians
     motion_coef_activation = lambda x: F.softmax(x, dim=-1)
-    params, variables = add_new_gaussians(params, variables, sriud)
+    #params, variables = add_new_gaussians(params, variables, sriud)
 
     output_params = []
 
@@ -409,34 +417,31 @@ def train(seq, exp):
 
 
     optimizer = initialize_optimizer(params, variables)
-
-
     ### transfms positions [N, F, 3]
-    ### temporal_windows = [reversed_range[i:i+10] for i in range(0, 110, 10)]
 
-
-    transfms = bases.compute_transforms(reversed_range, coefs)
-    # transfms = bases.compute_transforms(ts, coefs)
-
-
-    for t in reversed_range:
+    for out_t in reversed_range:
       #### revised part
-      
+      temporal_intervals = 6
+      temporal_windows = list(range(out_t, out_t-temporal_intervals, -1))
+      transfms = bases.compute_transforms(temporal_windows, coefs)
       positions = torch.einsum(
           "pnij,pj->pni",
           transfms,
           F.pad(means, (0, 1), value=1.0),
       )
 
+
+      ### transfms positions [N, F, 3]
+      overall_loss = 0 
       for t in temporal_windows:
-        xyz_t =  positions[:, t]
+
+        xyz_t =  positions[:, t-out_t]
         t=int(t)
         dataset = get_dataset(t, md, seq, masks=None, mode='ego_only')
         stat_dataset = None
         todo_dataset = []
         is_initial_timestep = (int(t) == 111)
         params['means3D'] = xyz_t
-
         if not is_initial_timestep:
             params, variables = initialize_per_timestep(params, variables, optimizer)
 
@@ -447,19 +452,21 @@ def train(seq, exp):
             curr_data = get_batch(todo_dataset, dataset)
 
             loss, variables, losses = get_loss(params, curr_data, variables, is_initial_timestep, stat_dataset=stat_dataset, org_params=None)
-            loss.backward()
 
-            with torch.no_grad():
-                #report_progress(params, dataset[0], i, progress_bar)
-                #report_stat_progress(params, t, i, progress_bar, md)
-                #if is_initial_timestep:
-                #    params, variables = densify(params, variables, optimizer, i)
-                assert ((params['means3D'].shape[0]==0) is False)
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-            for key, value in losses.items():
-              wandb.log({key: value.item(), "iteration": i})
-            
+            overall_loss += loss
+        loss.backward()
+
+        with torch.no_grad():
+            #report_progress(params, dataset[0], i, progress_bar)
+            #report_stat_progress(params, t, i, progress_bar, md)
+            #if is_initial_timestep:
+            #    params, variables = densify(params, variables, optimizer, i)
+            assert ((params['means3D'].shape[0]==0) is False)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+        for key, value in losses.items():
+          wandb.log({key: value.item(), "iteration": i})
+        
         progress_bar.close()
         output_params.append(params2cpu(params, is_initial_timestep))
         #print(output_params)
