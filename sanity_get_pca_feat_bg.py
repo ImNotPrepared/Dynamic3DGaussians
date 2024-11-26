@@ -21,7 +21,7 @@ near, far = 1e-7, 7e0
 import matplotlib.pyplot as plt
 
 
-base_path = '/data3/zihanwa3/Capstone-DSR/Processing_dance/dinov2features/resized_512_Aligned_fg_only/'
+base_path = '/data3/zihanwa3/Capstone-DSR/Dynamic3DGaussians/data_ego/cmu_bike/bg_feats/'
 
 def retrieve_feat_map(seq, ts):
   feature_root_path= base_path + seq #undist_cam00_670/000000.npy'
@@ -32,24 +32,6 @@ def retrieve_feat_map(seq, ts):
 
 base_mask_path = '/data3/zihanwa3/Capstone-DSR/Processing_dance/sam_v2_dyn_mask/'
 
-def retrieve_dyn_mask(seq, ts, resize=None):
-    mask_path = base_mask_path + f'{str(seq)}/dyn_mask_{str(ts)}.npz'
-    mask = np.load(mask_path)['dyn_mask']
-
-    # Remove the first dimension (1, h, w) -> (h, w)
-    mask = np.squeeze(mask, axis=0)
-    
-    # Resize the mask if needed
-    if resize is not None:
-        mask = mask.astype(np.uint8)
-        mask = cv2.resize(mask, resize, interpolation=cv2.INTER_NEAREST)
-
-
-
-    # Add a new axis to convert (h, w) -> (h, w, 1)
-    mask = mask[:, :, np.newaxis]
-
-    return mask
 
 def vis_feature(features, pca, mask=None):
     # Reshape features
@@ -97,7 +79,6 @@ for cam_id in range(1, 5):
     # Flatten features and masks
     features_flat = feat_map.reshape(feat_map.shape[0], -1).T  # Shape: [H*W, C]
     mask_flat = dyn_mask.flatten().astype(bool)
-    # Optionally apply mask
     masked_features = features_flat[mask_flat]
     all_features.append(masked_features)
     all_masks.append(mask_flat)

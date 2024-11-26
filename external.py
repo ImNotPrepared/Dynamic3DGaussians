@@ -242,19 +242,15 @@ def o3d_knn_compact_gaussians_with_mask(pts, num_knn, num_compact):
 
 
 def densify(params, variables, optimizer, i):
-    #if i <= 5000:
     if i <= 5000:
         variables = accumulate_mean2d_gradient(variables)
         grad_thresh = 0.0002
-        #if (i >= 500) and (i % 100 == 0):
         if (i >= 500) and (i % 100 == 0):
             grads = variables['means2D_gradient_accum'] / variables['denom']
             grads[grads.isnan()] = 0.0
-
             to_clone = torch.logical_and(grads >= grad_thresh, (
                         torch.max(torch.exp(params['log_scales']), dim=1).values <= 0.01 * variables['scene_radius']))
-            new_params = {k: v[to_clone] for k, v in params.items() if (k not in ['cam_m', 'cam_c'])}
-
+            new_params = {k: v[to_clone] for k, v in params.items() if k not in ['cam_m', 'cam_c']}
             params = cat_params_to_optimizer(new_params, params, optimizer)
             num_pts = params['means3D'].shape[0]
 
@@ -263,7 +259,6 @@ def densify(params, variables, optimizer, i):
             to_split = torch.logical_and(padded_grad >= grad_thresh,
                                          torch.max(torch.exp(params['log_scales']), dim=1).values > 0.01 * variables[
                                              'scene_radius'])
-            #print('1st',  params['means3D'].shape[0],  params['label'].shape[0])
             n = 2  # number to split into
             new_params = {k: v[to_split].repeat(n, 1) for k, v in params.items() if k not in ['cam_m', 'cam_c']}
             stds = torch.exp(params['log_scales'])[to_split].repeat(n, 1)
@@ -272,34 +267,21 @@ def densify(params, variables, optimizer, i):
             rots = build_rotation(params['unnorm_rotations'][to_split]).repeat(n, 1, 1)
             new_params['means3D'] += torch.bmm(rots, samples.unsqueeze(-1)).squeeze(-1)
             new_params['log_scales'] = torch.log(torch.exp(new_params['log_scales']) / (0.8 * n))
-
             params = cat_params_to_optimizer(new_params, params, optimizer)
             num_pts = params['means3D'].shape[0]
-            #print('2st',  params['means3D'].shape[0],  params['label'].shape[0])
 
             variables['means2D_gradient_accum'] = torch.zeros(num_pts, device="cuda")
             variables['denom'] = torch.zeros(num_pts, device="cuda")
             variables['max_2D_radius'] = torch.zeros(num_pts, device="cuda")
+            to_remove = torch.cat((to_split, torch.zeros(n * to_split.sum(), dtype=torch.bool, device="cuda")))
+            params, variables = remove_points(to_remove, params, variables, optimizer)
 
-
-            #to_remove = torch.cat((to_split, torch.zeros(n * to_split.sum(), dtype=torch.bool, device="cuda")))
-            #params, variables = remove_points(to_remove, params, variables, optimizer)
-
-
-            #_, _, mask= o3d_knn_compact_gaussians_with_mask(params['means3D'].detach().cpu().numpy(), 20, int(0.99*len(params['means3D'].detach().cpu().numpy())))
-            
-
-            remove_threshold = 0.005 if i == 5000 else 0.001 #005
+            remove_threshold = 0.25 if i == 5000 else 0.005
             to_remove = (torch.sigmoid(params['logit_opacities']) < remove_threshold).squeeze()
-
-
-            #mask = mask.to(to_remove.device)
-            #to_remove = torch.logical_or(to_remove, mask)
             if i >= 3000:
                 big_points_ws = torch.exp(params['log_scales']).max(dim=1).values > 0.1 * variables['scene_radius']
                 to_remove = torch.logical_or(to_remove, big_points_ws)
-            #params, variables = remove_points(to_remove, params, variables, optimizer)
-            #print('4st',  params['means3D'].shape[0],  params['label'].shape[0])
+            params, variables = remove_points(to_remove, params, variables, optimizer)
 
             torch.cuda.empty_cache()
 

@@ -5,7 +5,6 @@ import pandas as pd
 import open3d as o3d
 import time
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
-from colormap import colormap
 import matplotlib.pyplot as plt
 from pytorch3d.renderer import (
 

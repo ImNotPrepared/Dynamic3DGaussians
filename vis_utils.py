@@ -6,7 +6,6 @@ import time
 from diff_gaussian_rasterization import GaussianRasterizer as Renderer
 from helpers import setup_camera, quat_mult
 from external import build_rotation
-from colormap import colormap
 import matplotlib.pyplot as plt
 from copy import deepcopy
 from pytorch3d.structures import Pointclouds
@@ -43,58 +42,7 @@ from pytorch3d.renderer import (
 from PIL import Image
 from pytorch3d.transforms import RotateAxisAngle
 from tqdm import tqdm
-def draw_tracks_2d(
-    img: torch.Tensor,
-    tracks_2d: torch.Tensor,
-    track_point_size: int = 2,
-    track_line_width: int = 1,
-    cmap_name: str = "gist_rainbow",
-):
-    cmap = colormaps.get_cmap(cmap_name)
-    # (H, W, 3).
-    img_np = (img.cpu().numpy() * 255.0).astype(np.uint8)
-    # (P, N, 2).
-    tracks_2d_np = tracks_2d.cpu().numpy()
 
-    num_tracks, num_frames = tracks_2d_np.shape[:2]
-
-    canvas = img_np.copy()
-    for i in range(num_frames - 1):
-        alpha = max(1 - 0.9 * ((num_frames - 1 - i) / (num_frames * 0.99)), 0.1)
-        img_curr = canvas.copy()
-        for j in range(num_tracks):
-            color = tuple(np.array(cmap(j / max(1, float(num_tracks - 1)))[:3]) * 255)
-            color_alpha = 1
-            hsv = colorsys.rgb_to_hsv(color[0], color[1], color[2])
-            color = colorsys.hsv_to_rgb(hsv[0], hsv[1] * color_alpha, hsv[2])
-            pt1 = tracks_2d_np[j, i]
-            pt2 = tracks_2d_np[j, i + 1]
-            p1 = (int(round(pt1[0])), int(round(pt1[1])))
-            p2 = (int(round(pt2[0])), int(round(pt2[1])))
-            img_curr = cv2.line(
-                img_curr,
-                p1,
-                p2,
-                color,
-                thickness=track_line_width,
-                lineType=cv2.LINE_AA,
-            )
-        canvas = cv2.addWeighted(img_curr, alpha, canvas, 1 - alpha, 0)
-
-    for j in range(num_tracks):
-        color = tuple(np.array(cmap(j / max(1, float(num_tracks - 1)))[:3]) * 255)
-        pt = tracks_2d_np[j, -1]
-        pt = (int(round(pt[0])), int(round(pt[1])))
-        canvas = cv2.circle(
-            canvas,
-            pt,
-            track_point_size,
-            color,
-            thickness=-1,
-            lineType=cv2.LINE_AA,
-        )
-
-    return canvas
 
 
 def rgbd2pcd(im, depth, w2c, k, def_pix, pix_ones, show_depth=False, project_to_cam_w_scale=None,camera=None):
@@ -182,32 +130,7 @@ def make_lineset(all_pts, cols, num_lines):
     return linesets
 
 
-def calculate_trajectories(scene_data, traj_frac, traj_length, is_fg):
-    in_pts = [data['means3D'][is_fg][::traj_frac].contiguous().float().cpu().numpy() for data in scene_data]
-    num_lines = len(in_pts[0])
-    cols = np.repeat(colormap[np.arange(len(in_pts[0])) % len(colormap)][None], traj_length, 0).reshape(-1, 3)
-    out_pts = []
-    for t in range(len(in_pts))[traj_length:]:
-        out_pts.append(np.array(in_pts[t - traj_length:t + 1]).reshape(-1, 3))
-    return make_lineset(out_pts, cols, num_lines)
 
-
-def calculate_rot_vec(scene_data, traj_frac, traj_length, is_fg):
-    in_pts = [data['means3D'][is_fg][::traj_frac].contiguous().float().cpu().numpy() for data in scene_data]
-    in_rotation = [data['rotations'][is_fg][::traj_frac] for data in scene_data]
-    num_lines = len(in_pts[0])
-    cols = colormap[np.arange(num_lines) % len(colormap)]
-    inv_init_q = deepcopy(in_rotation[0])
-    inv_init_q[:, 1:] = -1 * inv_init_q[:, 1:]
-    inv_init_q = inv_init_q / (inv_init_q ** 2).sum(-1)[:, None]
-    init_vec = np.array([-0.1, 0, 0])
-    out_pts = []
-    for t in range(len(in_pts)):
-        cam_rel_qs = quat_mult(in_rotation[t], inv_init_q)
-        rot = build_rotation(cam_rel_qs).cpu().numpy()
-        vec = (rot @ init_vec[None, :, None]).squeeze()
-        out_pts.append(np.concatenate((in_pts[t] + vec, in_pts[t]), 0))
-    return make_lineset(out_pts, cols, num_lines)
 
 
 def render(w2c, k, timestep_data, w, h, near, far):
